@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""
-Enhanced DeepgramClient with proper speech_final and utterance_end support.
+"""Enhanced DeepgramClient with proper speech_final and utterance_end support.
 Includes automatic reconnect, heartbeat pings, and clean shutdown.
 """
-import contextlib
-import aiohttp
+
 import asyncio
-import logging
+import contextlib
 import json
-from typing import Optional, Dict, Any
+import logging
+
+import aiohttp
 
 
 class DeepgramClient:
@@ -44,28 +44,25 @@ class DeepgramClient:
             "endpointing": "500",  # 500ms for endpointing
             "utterance_end_ms": "1000",  # 1 second for utterance end
             "interim_results": "true",  # Enable interim results for utterance_end to work
-            "smart_format": "true"  # Format numbers, emails, etc.
+            "smart_format": "true",  # Format numbers, emails, etc.
         }
         qs = "&".join(f"{k}={v}" for k, v in params.items())
         self.ws_url = f"wss://api.deepgram.com/v1/listen?{qs}"
 
-        self._session: Optional[aiohttp.ClientSession] = None
-        self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
-        self._receive_task: Optional[asyncio.Task] = None
+        self._session: aiohttp.ClientSession | None = None
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._heartbeat_task: asyncio.Task | None = None
+        self._receive_task: asyncio.Task | None = None
         self._transcript_queue = asyncio.Queue()
 
         logging.debug(f"[DeepgramClient] Initialized with URL: {self.ws_url}")
 
     async def connect(self):
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=self.ssl)
-            )
+            self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=self.ssl))
         try:
             self._ws = await self._session.ws_connect(
-                self.ws_url,
-                headers={"Authorization": f"Token {self.api_key}"}
+                self.ws_url, headers={"Authorization": f"Token {self.api_key}"}
             )
             logging.info("[DeepgramClient] WebSocket connected.")
         except Exception as e:
@@ -106,8 +103,7 @@ class DeepgramClient:
                     logging.warning(f"[DeepgramClient] send error, reconnecting: {e}")
                     await self.connect()
                     continue
-                else:
-                    raise
+                raise
             except Exception as e:
                 logging.error(f"[DeepgramClient] Unexpected send error: {e}")
                 raise
@@ -120,17 +116,19 @@ class DeepgramClient:
 
                 if msg.type == aiohttp.WSMsgType.TEXT:
                     data = json.loads(msg.data)
-                    
+
                     # Handle UtteranceEnd event
                     if data.get("type") == "UtteranceEnd":
                         utterance_end_event = {
                             "type": "utterance_end",
                             "channel": data.get("channel", [0, 1]),
-                            "last_word_end": data.get("last_word_end")
+                            "last_word_end": data.get("last_word_end"),
                         }
                         await self._transcript_queue.put(utterance_end_event)
-                        logging.debug(f"[DeepgramClient] Received UtteranceEnd: {utterance_end_event}")
-                    
+                        logging.debug(
+                            f"[DeepgramClient] Received UtteranceEnd: {utterance_end_event}"
+                        )
+
                     # Handle Results event (transcripts)
                     elif data.get("type") == "Results" and data.get("is_final"):
                         channel = data.get("channel", {})
@@ -145,10 +143,12 @@ class DeepgramClient:
                                     "confidence": alternative.get("confidence", 1.0),
                                     "words": alternative.get("words", []),
                                     "speech_final": data.get("speech_final", False),
-                                    "is_final": data.get("is_final", False)
+                                    "is_final": data.get("is_final", False),
                                 }
                                 await self._transcript_queue.put(transcript_event)
-                                logging.debug(f"[DeepgramClient] Received transcript: {transcript} (speech_final: {transcript_event['speech_final']})")
+                                logging.debug(
+                                    f"[DeepgramClient] Received transcript: {transcript} (speech_final: {transcript_event['speech_final']})"
+                                )
 
                 elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                     logging.warning("[DeepgramClient] WebSocket closed or error, reconnecting...")
@@ -193,7 +193,7 @@ class DeepgramClient:
                 logging.debug("[DeepgramClient] Sent CloseStream message")
             except:
                 pass
-            
+
             await self._ws.close()
             logging.info("[DeepgramClient] WebSocket closed.")
 

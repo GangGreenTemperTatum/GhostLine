@@ -4,7 +4,6 @@
 import sqlite3
 
 
-
 def init_db(path):
     conn = sqlite3.connect(path, check_same_thread=False)
     cur = conn.cursor()

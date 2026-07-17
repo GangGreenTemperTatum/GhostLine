@@ -1,10 +1,10 @@
 # 👻 **GhostLine** – Your LLM Fueled AI-Powered Vishing Operative
 
-_Feed it a number. Your cloned voice does the social engineering, while you sip your coffee. A ghost that talks on the phone for you._ 
+_Feed it a number. Your cloned voice does the social engineering, while you sip your coffee. A ghost that talks on the phone for you._
 
 GhostLine is Social Operator Persona with a dial-tone. Enter a phone number, and your voice clone handles the conversation—building rapport, extracting credentials, and capturing intel—while you simply sit back and document the victory.
 
-For Operators - Imagine this is your temporary disposable vishing toolkit automated infra. You can spin it up just as easily as make it disappear. 
+For Operators - Imagine this is your temporary disposable vishing toolkit automated infra. You can spin it up just as easily as make it disappear.
 
 _No signed Rules of Engagement? No dialing. GhostLine is intended strictly for authorized security assessments only. Be good, and hack on ethically!_
 
@@ -12,23 +12,23 @@ _No signed Rules of Engagement? No dialing. GhostLine is intended strictly for a
 
 ---
 
-## 📑 Index  
+## 📑 Index
 (Scroll or ⌘+F—this doc is *deliberately long* for auditability.)
 
-1. [Elevator Pitch](#elevator-pitch)  
-2. [Quick Start](#quick‑start)  
-3. [System Diagram](#system-diagram)  
-4. [Persuasion Engine](#persuasion-engine)  
-5. [Playbooks](#playbooks)  
-6. [CLI Reference](#cli-reference)  
-7. [Config & Secrets](#config--secrets)  
-8. [Installation](#installation)  
-9. [Dashboard](#dashboard)  
-10. [SQLite Schema](#sqlite-schema)  
-11. [Troubleshooting](#troubleshooting)  
-12. [Roadmap](#roadmap)  
-13. [FAQ](#faq)  
-14. [Legal](#legal)  
+1. [Elevator Pitch](#elevator-pitch)
+2. [Quick Start](#quick‑start)
+3. [System Diagram](#system-diagram)
+4. [Persuasion Engine](#persuasion-engine)
+5. [Playbooks](#playbooks)
+6. [CLI Reference](#cli-reference)
+7. [Config & Secrets](#config--secrets)
+8. [Installation](#installation)
+9. [Dashboard](#dashboard)
+10. [SQLite Schema](#sqlite-schema)
+11. [Troubleshooting](#troubleshooting)
+12. [Roadmap](#roadmap)
+13. [FAQ](#faq)
+14. [Legal](#legal)
 
 ---
 
@@ -48,20 +48,24 @@ GhostLine makes *phone‑borne social engineering as repeatable as an email phis
 ### Outbound (lab mode)
 
 ```bash
-# 1  Clone voice (once)
-python main.py clone assets/it_sample.wav --name helpdesk
+# 0  Install (one-time)
+uv sync --extra dev
+cp .env.example .env  # then edit .env with real API keys
 
-# 2  Serve + tunnel (default 8000)
-python main.py serve --voice-id helpdesk
+# 1  Clone voice (once)
+uv run ghostline clone assets/it_sample.wav --name helpdesk
 
-# 3  Phone a friend
-python main.py call +15551234567 --persona calm --campaign demo
+# 2  Serve + tunnel (default 8000)
+uv run ghostline serve --voice-id helpdesk
+
+# 3  Phone a friend
+uv run ghostline call +15551234567 --persona calm --campaign demo
 ```
 
 ### Inbound (hooked number)
 
 ```bash
-python main.py serve --voice-id helpdesk --playbook executive_spearphish_multi-lingual.yaml
+uv run ghostline serve --voice-id helpdesk --playbook playbooks/executive_spearphish_multi-lingual.yaml
 # Twilio Console → Number → Voice Webhook
 #   https://<ngrok>.ngrok-free.app/voice  (POST)
 ```
@@ -180,7 +184,7 @@ flowchart TD
     classDef cli fill:#1e40af,color:#fff
     class A,B,C cli
 ```
-Persuasion Algorithm: 
+Persuasion Algorithm:
 ```mermaid
 stateDiagram-v2
     [*] --> RAPPORT
@@ -270,9 +274,9 @@ sequence:
 
 ### Author Tips
 
-1. **Regex early‑exit**—`success_regex` flips stage → REPORTING.
-2. **`max_cycles`** guards LLM loops (∞ default).
-3. **Branching** fields (`goto_on_success`) coming in v0.7.
+1. **Regex early-exit**—`success_regex` flips stage → REPORTING.
+2. **`max_cycles`** guards LLM loops (default `1`; raise to retry).
+3. **Branching** fields (`goto_on_success`, `goto_on_fail`) are implemented—jump to any stage on match/exhaustion.
 
 ---
 
@@ -280,12 +284,12 @@ sequence:
 
 | Command | Purpose |
 |---------|---------|
-| `clone` | Upload WAV/MPP → ElevenLabs voice clone |
+| `clone` | Upload WAV/M4A → ElevenLabs voice clone |
 | `serve` | Start FastAPI + ngrok tunnel + dashboard |
 | `call`  | Place outbound PSTN call via Twilio |
-| `analytics` | (stub) future CSV/HTML export |
+| `analytics` | Export call + stage stats to CSV or HTML |
 
-Run any sub‑command with `-h` for flags.
+Run any sub-command with `--help` for flags.
 
 ---
 
@@ -293,83 +297,106 @@ Run any sub‑command with `-h` for flags.
 
 ### Mandatory
 
-Set these environment variables inside keys.py file. 
+Copy `.env.example` to `.env` and fill in real values. **Never commit `.env`.**
+
 ```bash
-import os
-import openai
-
-# Environment variables required for configuring the application
-os.environ["TWILIO_ACCOUNT_SID"] = "<TWILIO_ACCOUNT_SID>"  # Your Twilio Account SID
-os.environ["TWILIO_AUTH_TOKEN"] = "<TWILIO_AUTH_TOKEN>"    # Your Twilio Auth Token
-os.environ["TWILIO_FROM_NUMBER"] = "<TWILIO_PHONE_NUMBER>"  # Your Twilio phone number
-os.environ["OPENAI_API_KEY"] = "<OPENAI_API_KEY>"          # Your OpenAI API Key
-os.environ["DEEPGRAM_API_KEY"] = "<DEEPGRAM_API_KEY>"      # Your Deepgram API Key
-os.environ["ELEVENLABS_API_KEY"] = "<ELEVENLABS_API_KEY>"  # Your ElevenLabs API Key
-os.environ["NGROK_AUTHTOKEN"] = "<NGROK_AUTHTOKEN>"        # Your ngrok Auth Token
-
-# Set OpenAI API key
-openai.api_key = os.environ["OPENAI_API_KEY"]
+cp .env.example .env
+# Edit .env with your real API keys
 ```
+
+Required environment variables (see `.env.example` for the full list):
+
+| Variable | Purpose |
+|----------|---------|
+| `TWILIO_ACCOUNT_SID` | Twilio Account SID (starts with `AC`) |
+| `TWILIO_AUTH_TOKEN` | Twilio Auth Token |
+| `TWILIO_FROM_NUMBER` | Twilio phone number (E.164 format) |
+| `DEEPGRAM_API_KEY` | Deepgram API key for STT |
+| `ELEVENLABS_API_KEY` | ElevenLabs API key for TTS + voice cloning |
+| `NGROK_AUTHTOKEN` | ngrok auth token for tunneling |
+| `LITELLM_MODEL` | LiteLLM model string (e.g. `openai/gpt-4o-mini`, `anthropic/claude-3-5-sonnet-latest`) |
+
+Provider-specific keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`) are only needed for the LLM provider you select via `LITELLM_MODEL`.
 
 ---
 
 ## Installation
 
-### macOS (brew)
+### Prerequisites (system packages)
 
+**macOS (brew):**
 ```bash
 brew install ffmpeg ngrok
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
 ```
 
-### Debian/Ubuntu
+**Debian/Ubuntu:**
+```bash
+sudo apt-get install ffmpeg ngrok-client
+```
+
+### Project install (uv-managed)
 
 ```bash
-sudo apt‑get install ffmpeg ngrok-client
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+# Install uv (one-time) — see https://docs.astral.sh/uv/
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install all deps (production + dev)
+uv sync --extra dev
+
+# Verify the CLI works
+uv run ghostline --help
+```
+
+### Development commands
+
+```bash
+uv run ruff check .                 # lint
+uv run ruff format .                # format
+uv run mypy                         # strict typecheck
+uv run pytest                       # all tests
+uv run pytest -m "not live"         # skip live PSTN/API tests
+uv run pre-commit run --all-files   # all hooks
 ```
 
 ---
 
 ## Dashboard
 
-* **`/`** — HTML with stage counts, dwell averages, heat‑map SVG.
-* **`/api/stats`** — JSON for Metrics.
+* **`/`** — HTML dashboard with call count, message count, and stage distribution table.
+* **`/api/stats`** — JSON with `call_count`, `stage_counts`, and active `playbook` name.
+* **`/voice`** (POST) — Returns TwiML pointing Twilio at the ngrok WSS URL.
 
 ---
 
 ## SQLite Schema
 
+See [`src/ghostline/persistence/schema.sql`](src/ghostline/persistence/schema.sql) for the canonical schema. Summary:
+
 ```sql
 CREATE TABLE calls (
   call_sid TEXT PRIMARY KEY,
-  start_time TEXT,
-  end_time TEXT,
-  voice_id TEXT,
-  campaign TEXT,
-  persona TEXT,
-  phone TEXT,
-  outcome TEXT,
-  conversion_score REAL,
-  notes TEXT
+  start_time TEXT, end_time TEXT,
+  voice_id TEXT, campaign TEXT, persona TEXT, phone_number TEXT,
+  outcome TEXT, conversion_score REAL, notes TEXT
 );
 
 CREATE TABLE messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  call_sid TEXT,
-  role TEXT,
-  content TEXT,
-  timestamp TEXT,
-  sales_stage TEXT
+  call_sid TEXT, role TEXT, content TEXT, timestamp TEXT,
+  sales_stage TEXT, sentiment_score REAL, interest_level REAL,
+  objection_type TEXT, trigger_used TEXT
 );
 
 CREATE TABLE objections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  call_sid TEXT,
-  objection_type TEXT,
-  timestamp TEXT
+  call_sid TEXT, objection_text TEXT, objection_type TEXT,
+  response_used TEXT, resolved BOOLEAN, timestamp TEXT
+);
+
+CREATE TABLE customer_profiles (
+  phone_number TEXT PRIMARY KEY,
+  communication_style TEXT, pain_points TEXT, response_rates TEXT,
+  preferred_persona TEXT, last_updated TEXT
 );
 ```
 
@@ -389,9 +416,12 @@ CREATE TABLE objections (
 ## Roadmap
 
 - [ ] Docker Image
-- [ ] Playbook branching (`goto_on_*`)  
-- [ ] Whisper‑local STT plugin  
-- [ ] CSV export for transcripts  
+- [x] Playbook branching (`goto_on_success` / `goto_on_fail`)
+- [x] CSV/HTML export for transcripts (`analytics` command)
+- [x] `audioop` removed — pure-numpy µ-law codec
+- [x] Async sqlite (no module-level `DB_CONN`)
+- [x] Model-agnostic LLM via LiteLLM adapter
+- [ ] Whisper-local STT plugin
 - [ ] Make the voice understand "interruptions". When someone talks over you on the phone you typically get interrupted, and let them talk.
 - [ ] Filter background noise.
 
@@ -399,13 +429,13 @@ CREATE TABLE objections (
 
 ## FAQ
 
-**Q:** Does GhostLine spoof caller‑ID?  
+**Q:** Does GhostLine spoof caller‑ID?
 **A:** No—use a legit Twilio number or CNAM‑branded trunk. This is a demo tool, and is intentionally loud.
 
-**Q:** Air‑gapped lab possible?  
+**Q:** Air‑gapped lab possible?
 **A:** Yes with on‑prem Whisper STT and TTS; swap Deepgram/ElevenLabs.
 
-**Q:** Maximum calls per box?  
+**Q:** Maximum calls per box?
 **A:** Lab test: 64 concurrent on M1 MacBook Pro (CPU bound on mixing).
 
 ---
@@ -422,8 +452,7 @@ GhostLine is released under the MIT License. License is revoked for professional
 
 **Liability & Responsible Use.** You—and only you—bear full legal and ethical responsibility for the use of GhostLine. The maintainers explicitly disclaim all liability for damages, data breaches, reputational harm, or unintended consequences resulting from misuse. Always log your activities thoroughly, practice responsible red teaming, and leave target environments in better shape than you found them.
 
-You must follow terms and conditions for our dependencies such as twilio, deepgram and elevenlabs. This responsibility is sole-ly yours. 
+You must follow terms and conditions for our dependencies such as twilio, deepgram and elevenlabs. This responsibility is sole-ly yours.
 
 
 © 2025 Shrewd.  Play nice; hack hard.
-
