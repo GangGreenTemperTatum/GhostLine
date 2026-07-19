@@ -217,7 +217,7 @@ class TestBuildStageAgent:
     def test_returns_agent_named_for_stage(self, simple_playbook: Playbook) -> None:
         agent = build_stage_agent(SalesStage.RAPPORT, simple_playbook)
         assert isinstance(agent, Agent)
-        assert agent.name == "axel-rapport"
+        assert agent.name == "axel_rapport"
 
     def test_custom_prompt_merged_into_instructions(self, simple_playbook: Playbook) -> None:
         agent = build_stage_agent(SalesStage.RAPPORT, simple_playbook)

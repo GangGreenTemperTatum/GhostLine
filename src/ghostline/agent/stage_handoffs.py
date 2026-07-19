@@ -111,7 +111,7 @@ def build_stage_agent(
 
     targets_list: list[Agent[CallContext] | Any] = list(handoff_targets or [])
     return Agent(
-        name=f"axel-{stage.name.lower()}",
+        name=f"axel_{stage.name.lower()}",
         instructions=instructions,
         model=model,
         handoffs=targets_list,

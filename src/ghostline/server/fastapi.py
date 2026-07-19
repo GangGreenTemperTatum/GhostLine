@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+from ghostline.agent.reply_generator import ReplyGenerator
 from ghostline.audio.ambient import AmbientNoise
 from ghostline.persistence.repository import CallRecord, MessageRecord, Repository
 from ghostline.playbook import Playbook
@@ -73,6 +74,7 @@ class ServerDeps:
     playbook: Playbook | None = None
     voice_id: str = ""
     ngrok_ws_url: str | None = None
+    reply_generator: ReplyGenerator | None = None
 
 
 class CallSession:
@@ -99,9 +101,13 @@ class CallSession:
         self.check_in_sent: bool = False
         self.deepgram: DeepgramClient | None = None
         self.runner: PlaybookRunner | None = None
+        self._call_context = None
         if deps.playbook is not None:
             self.runner = PlaybookRunner(deps.playbook)
             self.current_stage = self.runner.current_stage
+        # Create a fresh per-call context for the reply generator.
+        if deps.reply_generator is not None:
+            self._call_context = deps.reply_generator.new_context()
 
     async def run(self) -> None:
         """Main per-call coroutine: accept WS, run pump_in + pump_out + silence_monitor."""
@@ -266,10 +272,20 @@ class CallSession:
         return STAGE_TIMINGS[self.current_stage]
 
     async def _process_utterance(self, utterance: str) -> None:
-        """Handle a complete user utterance: log, evaluate, reply, speak."""
+        """Handle a complete user utterance: log, evaluate, reply, speak.
+
+        Pipeline:
+        1. Insert the user message into the DB
+        2. Evaluate stage transitions via the playbook runner
+        3. Generate a reply via the ReplyGenerator (analysis + stage agent)
+        4. Insert the assistant reply into the DB
+        5. Synthesize TTS and stream to Twilio
+        """
         if self.call_sid is None:
             return
         _LOGGER.info("Processing utterance for %s: %r", self.call_sid, utterance[:120])
+
+        # 1. Log the user message
         await self._deps.repository.insert_message(
             MessageRecord(
                 call_sid=self.call_sid,
@@ -278,17 +294,20 @@ class CallSession:
                 sales_stage=self.current_stage.name,
             )
         )
-        # Evaluate stage transitions via the playbook runner.
+
+        # 2. Evaluate stage transitions (may update self.current_stage)
         if self.runner is not None:
             outcome = self.runner.evaluate(utterance)
             self.current_stage = outcome.next_stage
             if outcome.exit_ is not None:
                 await self._handle_exit(outcome.exit_)
                 return
-        # TODO: invoke the Agents SDK here to generate a reply. For now we
-        # emit a placeholder so the call loop is testable end-to-end without
-        # an LLM. The agent layer is wired in by the composition root.
-        reply = "I understand. Could you tell me more?"
+
+        # 3. Generate a reply via the agent layer
+        history = await self._build_history_prompt()
+        reply = await self._generate_reply(utterance, history)
+
+        # 4. Log the assistant reply
         await self._deps.repository.insert_message(
             MessageRecord(
                 call_sid=self.call_sid,
@@ -297,7 +316,47 @@ class CallSession:
                 sales_stage=self.current_stage.name,
             )
         )
+
+        # 5. Speak the reply
         await self._speak(reply)
+
+    async def _build_history_prompt(self) -> str:
+        """Build a conversation history string from recent DB messages."""
+        if self.call_sid is None:
+            return ""
+        messages = await self._deps.repository.recent_messages(self.call_sid, limit=8)
+        if not messages:
+            return ""
+        lines = []
+        for msg in messages:
+            speaker = "Target" if msg.role == "user" else "Axel"
+            lines.append(f"{speaker}: {msg.content}")
+        return "\n".join(lines)
+
+    async def _generate_reply(self, utterance: str, history: str) -> str:
+        """Generate a reply via the ReplyGenerator, with fallback."""
+        gen = self._deps.reply_generator
+        if gen is None:
+            _LOGGER.warning("No reply generator configured; using fallback")
+            return "I understand. Could you tell me more about that?"
+        try:
+            result = await gen.generate(
+                utterance=utterance,
+                current_stage=self.current_stage,
+                context=self._call_context,
+                history=history or None,
+            )
+            _LOGGER.info(
+                "Reply generated for %s: %r (trigger=%s, sentiment=%s)",
+                self.call_sid,
+                result.reply[:80],
+                result.trigger,
+                result.analysis.sentiment_score if result.analysis else None,
+            )
+            return result.reply
+        except Exception:
+            _LOGGER.exception("Reply generation failed; using fallback")
+            return "I understand. Could you tell me more about that?"
 
     async def _handle_exit(self, exit_: StageExit) -> None:
         """Record final outcome and stop speaking."""

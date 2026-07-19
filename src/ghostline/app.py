@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 
 import uvicorn
 
+from ghostline.agent.model import build_model
+from ghostline.agent.reply_generator import ReplyGenerator
 from ghostline.audio.ambient import AmbientNoise
 from ghostline.persistence.repository import Repository
 from ghostline.server.dashboard import render_dashboard_from_repo
@@ -64,6 +66,25 @@ class SalesAutomationApp:
             self._ambient = AmbientNoise(path=self.settings.babble_noise_path)
         return self._ambient
 
+    def _resolve_llm_api_key(self) -> str | None:
+        """Return the API key for the active LLM provider.
+
+        Picks the right key based on the ``LITELLM_MODEL`` prefix so we
+        don't rely on LiteLLM reading a potentially-stale env var.
+        """
+        model = self.settings.litellm_model.lower()
+        if model.startswith("openai/"):
+            key = self.settings.openai_api_key
+            return key.get_secret_value() if key else None
+        if model.startswith("anthropic/"):
+            key = self.settings.anthropic_api_key
+            return key.get_secret_value() if key else None
+        if model.startswith("gemini/"):
+            key = self.settings.gemini_api_key
+            return key.get_secret_value() if key else None
+        # Ollama and other local providers don't need a key
+        return None
+
     async def repository(self) -> Repository:
         """Open the async sqlite repository (idempotent)."""
         if self._repository is None:
@@ -81,6 +102,24 @@ class SalesAutomationApp:
         # Build server deps — repository is opened synchronously via a one-shot.
         repo = self._run_async(self.repository())
 
+        # Build the reply generator (analysis + stage agents via LiteLLM).
+        # Pass the provider API key explicitly so LiteLLM doesn't fall back
+        # to a stale shell env var (pydantic-settings reads .env correctly,
+        # but LiteLLM reads os.environ directly).
+        api_key = self._resolve_llm_api_key()
+        model = build_model(
+            self.settings.litellm_model,
+            api_key=api_key,
+            api_base=self.settings.litellm_api_base,
+        )
+        reply_gen = ReplyGenerator(playbook=self.playbook, model=model)
+        _LOGGER.info(
+            "ReplyGenerator built (model=%s, playbook=%s, api_key=%s)",
+            self.settings.litellm_model,
+            self.playbook.meta.name if self.playbook else "<none>",
+            "set" if api_key else "from env",
+        )
+
         deps = ServerDeps(
             repository=repo,
             voice_service=self.voice_service,
@@ -91,6 +130,7 @@ class SalesAutomationApp:
             playbook=self.playbook,
             voice_id=voice_id,
             ngrok_ws_url=t.ws_url,
+            reply_generator=reply_gen,
         )
         fastapi_app = create_app(deps)
         try:
