@@ -55,10 +55,15 @@ def clone(
         api_key=settings.elevenlabs_api_key.get_secret_value(),
         model_id=settings.elevenlabs_model,
     )
-    try:
-        vid = asyncio.run(svc.clone(str(sample), name=name))
-    finally:
-        asyncio.run(svc.aclose())
+
+    async def _clone_and_close() -> str | None:
+        """Run clone + aclose in a single event loop (httpx client is loop-bound)."""
+        try:
+            return await svc.clone(str(sample), name=name)
+        finally:
+            await svc.aclose()
+
+    vid = asyncio.run(_clone_and_close())
     if vid:
         typer.echo(f"Voice created. ID: {vid}")
     else:

@@ -45,6 +45,9 @@ GhostLine makes *phone‑borne social engineering as repeatable as an email phis
 
 ## Quick Start
 
+> Full walkthrough with all gotchas: see [Setup Walkthrough](#setup-walkthrough) below.
+> This section is the TL;DR for users who already have all keys + a Twilio number.
+
 ### Outbound (lab mode)
 
 ```bash
@@ -52,20 +55,24 @@ GhostLine makes *phone‑borne social engineering as repeatable as an email phis
 uv sync --extra dev
 cp .env.example .env  # then edit .env with real API keys
 
-# 1  Clone voice (once)
-uv run ghostline clone assets/it_sample.wav --name helpdesk
+# 1  (Optional) Clone a voice — requires ElevenLabs Starter plan ($5/mo)
+uv run ghostline clone assets/your_sample.wav --name helpdesk
+#    Free-tier alternative: use a premade voice ID, skip this step.
+#    List available voices: see "ElevenLabs" section below.
 
 # 2  Serve + tunnel (default 8000)
-uv run ghostline serve --voice-id helpdesk
+uv run ghostline serve --voice-id <voice-id>
+#    Note the WSS URL printed in the log, e.g. wss://abc.ngrok-free.app/twilio
 
-# 3  Phone a friend
+# 3  In a SEPARATE terminal, export the tunnel URL, then place a call
+export NGROK_WS_URL=wss://abc.ngrok-free.app/twilio
 uv run ghostline call +15551234567 --persona calm --campaign demo
 ```
 
 ### Inbound (hooked number)
 
 ```bash
-uv run ghostline serve --voice-id helpdesk --playbook playbooks/executive_spearphish_multi-lingual.yaml
+uv run ghostline serve --voice-id <voice-id> --playbook playbooks/executive_spearphish_multi-lingual.yaml
 # Twilio Console → Number → Voice Webhook
 #   https://<ngrok>.ngrok-free.app/voice  (POST)
 ```
@@ -320,21 +327,11 @@ Provider-specific keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`)
 
 ---
 
-## Installation
+## Setup Walkthrough
 
-### Prerequisites (system packages)
+Each external service has a free tier. Expect ~20 minutes end-to-end.
 
-**macOS (brew):**
-```bash
-brew install ffmpeg ngrok
-```
-
-**Debian/Ubuntu:**
-```bash
-sudo apt-get install ffmpeg ngrok-client
-```
-
-### Project install (uv-managed)
+### 1. uv + Python deps
 
 ```bash
 # Install uv (one-time) — see https://docs.astral.sh/uv/
@@ -346,6 +343,142 @@ uv sync --extra dev
 # Verify the CLI works
 uv run ghostline --help
 ```
+
+### 2. System packages: ffmpeg + ngrok
+
+**ffmpeg** (audio transcoding for voice cloning + M4A→WAV):
+
+```bash
+# macOS
+brew install ffmpeg
+# Debian/Ubuntu
+sudo apt-get install ffmpeg
+```
+
+**ngrok** (public HTTPS/WSS tunnel to localhost):
+
+```bash
+# macOS
+brew install ngrok
+# Debian/Ubuntu
+sudo apt-get install ngrok-client
+# Or direct download (no sudo):
+curl -sSL -o /tmp/ngrok.zip https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-darwin-arm64.zip
+unzip /tmp/ngrok.zip -d ~/bin && export PATH="$HOME/bin:$PATH"
+```
+
+Verify both: `ffmpeg -version` and `ngrok version`.
+
+### 3. Twilio (PSTN calls)
+
+1. Sign up at **https://www.twilio.com/console** (free trial = $15 credit).
+2. From the console home page, copy your **Account SID** (starts with `AC`) and **Auth Token** → set as `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` in `.env`.
+3. **Buy a phone number** (~$1/mo, free with trial credit):
+   - Easiest: run `uv run python scripts/buy_number.py --country CA --buy-first` (auto-buys the first available number)
+   - Or via console: **Phone Numbers → Manage → Buy a number**
+   - Set the E.164 number as `TWILIO_FROM_NUMBER` in `.env`.
+
+#### Trial account gotchas (important)
+
+If you're on the free trial ($15 credit), Twilio imposes two restrictions:
+
+1. **You can only call verified numbers.** Before placing a call, verify your target number:
+   - Console → **Phone Numbers → Manage → Verified Caller IDs**
+   - Click **Add a new Caller ID**, enter the target number, answer the automated call, enter the 6-digit code.
+   - This does **not** apply to paid accounts — only trial.
+
+2. **Trial accounts cannot use the inline `twiml` parameter.** GhostLine's `call` command works around this automatically by using the `/voice` webhook URL instead, but if you place calls manually via the Twilio REST API, use `url=` not `twiml=`.
+
+To lift both restrictions: upgrade at **https://console.twilio.com/us1/account/billing** (add $5+ credit + payment method).
+
+### 4. Deepgram (Speech-to-Text)
+
+1. Sign up at **https://console.deepgram.com/signup** ($200 free credit).
+2. When prompted **"What would you like to explore first?"**, pick **Speech to Text** (not Text to Speech or Voice Agent — GhostLine uses Deepgram only for STT).
+3. Left sidebar → **API Keys** → copy the key → set as `DEEPGRAM_API_KEY` in `.env`.
+
+### 5. ElevenLabs (Text-to-Speech + voice cloning)
+
+1. Sign up at **https://elevenlabs.io** (free tier = 10,000 TTS characters/month).
+2. Click your profile (top right) → **API Keys** → create one → set as `ELEVENLABS_API_KEY` in `.env`.
+3. Set `ELEVENLABS_MODEL=eleven_multilingual_v2` in `.env` (the legacy `eleven_monolingual_v1` was deprecated).
+
+#### Voice cloning vs. premade voices
+
+**Voice cloning** (replicating a specific voice from a sample) requires the **Starter plan** ($5/mo) or higher. The `clone` command will fail on the free tier with `paid_plan_required`.
+
+**Free-tier workaround — use a premade voice:**
+
+```bash
+# List premade voices on your account
+uv run python -c "
+import os
+from dotenv import load_dotenv
+import httpx
+load_dotenv()
+r = httpx.get('https://api.elevenlabs.io/v1/voices', headers={'xi-api-key': os.environ['ELEVENLABS_API_KEY']})
+for v in r.json().get('voices', [])[:8]:
+    print(f'{v[\"voice_id\"]:30} | {v[\"name\"]}')
+"
+```
+
+Pick any `voice_id` and pass it to `serve --voice-id <id>`. The premade voices (Sarah, Roger, George, etc.) are high-quality and work on the free tier.
+
+#### Cloning a voice (paid plans only)
+
+If you have a Starter+ plan, drop a 30-60 second WAV/M4A of the voice you want to clone into `assets/`:
+
+```bash
+uv run ghostline clone assets/your_sample.wav --name helpdesk
+# → prints a voice_id; use it with serve --voice-id <id>
+```
+
+Tips for a good clone sample:
+- 30-60 seconds of clean, single-speaker audio
+- 44.1kHz or higher, mono or stereo
+- No background music or noise
+- Conversational cadence (not reading a script flatly)
+
+### 6. ngrok authtoken
+
+1. Sign up at **https://dashboard.ngrok.com/signup** (free).
+2. Go to **https://dashboard.ngrok.com/get-started/your-authtoken** → copy the token → set as `NGROK_AUTHTOKEN` in `.env`.
+
+### 7. LLM provider (model-agnostic)
+
+GhostLine uses the OpenAI Agents SDK with the LiteLLM adapter, so the persuasion LLM can be any provider. Set `LITELLM_MODEL` in `.env`:
+
+| Provider | `LITELLM_MODEL` value | Required env var |
+|----------|----------------------|------------------|
+| OpenAI (default) | `openai/gpt-4o-mini` | `OPENAI_API_KEY` |
+| Anthropic | `anthropic/claude-3-5-sonnet-latest` | `ANTHROPIC_API_KEY` |
+| Google Gemini | `gemini/gemini-2.0-flash` | `GEMINI_API_KEY` |
+| Local (Ollama) | `ollama/llama3.1` | `LITELLM_API_BASE=http://localhost:11434` |
+
+### 8. Place your first call
+
+```bash
+# Terminal 1: start the server (prints the ngrok WSS URL)
+uv run ghostline serve --voice-id <voice-id>
+
+# Terminal 2: export the WSS URL from the serve log, then call
+export NGROK_WS_URL=wss://abc-12-34-56-78.ngrok-free.app/twilio
+uv run ghostline call +1<target-number> --campaign e2e-test
+```
+
+The target phone rings. When answered, the AI speaks the RAPPORT stage greeting, listens for the target's reply (via Deepgram), generates a reply (via the LLM), and speaks it (via ElevenLabs). The conversation flows through the 12-stage playbook.
+
+**Dashboards:**
+- GhostLine stats: `http://localhost:8000/`
+- ngrok inspector (live WS frames): `http://localhost:4040/`
+
+---
+
+## Installation
+
+See the [Setup Walkthrough](#setup-walkthrough) above for end-to-end setup
+with all gotchas (Twilio trial verification, ElevenLabs model migration,
+premade voices vs cloning, ngrok binary install, etc.).
 
 ### Development commands
 
@@ -406,10 +539,18 @@ CREATE TABLE customer_profiles (
 
 | Symptom | Probable Cause | Fix |
 |---------|---------------|-----|
-| Twilio 1000ms ping fail | `NGROK_WS_URL` stale | Restart `serve`, update webhook |
+| `call` command: "No NGROK_WS_URL found" | Env var not set in the shell running `call` | `export NGROK_WS_URL=wss://<from-serve-log>/twilio` (the `serve` process sets it internally but doesn't propagate to other shells) |
+| Twilio 400: `trial accounts have limited parameter access` | Trial account can't use inline `twiml` param | GhostLine's `call` command handles this automatically via the `/voice` webhook; if calling the REST API manually, use `url=` not `twiml=` |
+| Twilio 422: `No Twilio trial phone number is assigned for voice calls to this destination` | Trial account — target number not verified | Console → Phone Numbers → Verified Caller IDs → add the target number (automated verification call with 6-digit code) |
+| Twilio 400: `source phone number ... is not yet verified` | `TWILIO_FROM_NUMBER` not actually purchased on your account | Run `uv run python scripts/buy_number.py --buy-first` to buy one, then update `.env` |
+| ElevenLabs 400: `unsupported_model` / `eleven_monolingual_v1 deprecated` | Legacy model removed by ElevenLabs | Set `ELEVENLABS_MODEL=eleven_multilingual_v2` in `.env` |
+| ElevenLabs 400: `paid_plan_required` / `can_not_use_instant_voice_cloning` | Free tier doesn't include voice cloning | Either upgrade to Starter ($5/mo) or use a premade voice ID (see [Setup Walkthrough §5](#5-elevenlabs-text-to-speech--voice-cloning)) |
+| ngrok: `authentication failed: invalid authtoken` | Stale/revoked ngrok authtoken | Get a fresh one at https://dashboard.ngrok.com/get-started/your-authtoken |
+| `RuntimeError: Event loop is closed` (clone command) | Two `asyncio.run()` calls sharing an httpx client | Fixed in current version; if you see it, `uv sync` to update |
+| Twilio 1000ms ping fail | `NGROK_WS_URL` stale | Restart `serve`, re-export `NGROK_WS_URL` |
 | Crackly audio | FFmpeg resample glitch | `brew upgrade ffmpeg` |
-| Slack silent | Stage never hit REPORTING | Check playbook regex |
-| DB locked error | high concurrency writes | Use WAL pragma |
+| Call silent / no speech | Stage never hit REPORTING, or TTS returned silence fallback | Check serve log for ElevenLabs errors; verify `ELEVENLABS_API_KEY` and `voice_id` |
+| DB locked error | High concurrency writes | WAL pragma is already enabled; if persists, switch to Postgres (roadmap) |
 
 ---
 

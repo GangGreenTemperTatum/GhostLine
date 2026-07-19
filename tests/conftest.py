@@ -24,10 +24,12 @@ TEST_ENV: dict[str, str] = {
 
 @pytest.fixture(autouse=True)
 def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear all GhostLine env vars before each test to avoid leakage."""
+    """Clear all GhostLine env vars before each test to avoid leakage.
+
+    Also patches Settings so it doesn't read the developer's real .env file.
+    """
     for key in list(TEST_ENV):
         monkeypatch.delenv(key, raising=False)
-    # Also clear any stale NGROK_WS_URL from previous serve runs
     monkeypatch.delenv("NGROK_WS_URL", raising=False)
     clear_settings_cache()
 

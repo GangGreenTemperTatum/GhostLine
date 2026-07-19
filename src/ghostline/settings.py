@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # ── ElevenLabs TTS ──────────────────────────────────────────────
     elevenlabs_api_key: SecretStr
-    elevenlabs_model: str = "eleven_monolingual_v1"
+    elevenlabs_model: str = "eleven_multilingual_v2"
 
     # ── LLM via LiteLLM (model-agnostic) ───────────────────────────
     litellm_model: str = "openai/gpt-4o-mini"

@@ -43,7 +43,7 @@ class TestSettingsValidation:
             monkeypatch.setenv(k, v)
         clear_settings_cache()
         with pytest.raises(ValidationError) as exc:
-            Settings()
+            Settings(_env_file=None)
         assert "deepgram_api_key" in str(exc.value).lower()
 
     def test_sid_must_start_with_ac(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,7 +85,7 @@ class TestDefaults:
         s = Settings()
         assert s.deepgram_model == "nova-2"
         assert s.deepgram_language == "en-US"
-        assert s.elevenlabs_model == "eleven_monolingual_v1"
+        assert s.elevenlabs_model == "eleven_multilingual_v2"
         assert s.port == 8000
         assert s.host == "0.0.0.0"
 

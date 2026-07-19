@@ -54,5 +54,8 @@ assets/*.wav
 assets/*.m4a
 !assets/.gitkeep
 
+# ── Local binaries (ngrok etc.) ─────────────────
+bin/
+
 # ── OS ──────────────────────────────────────────
 Thumbs.db

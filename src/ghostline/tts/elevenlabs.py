@@ -50,7 +50,7 @@ class VoiceService:
     def __init__(
         self,
         api_key: str,
-        model_id: str = "eleven_monolingual_v1",
+        model_id: str = "eleven_multilingual_v2",
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._api_key = api_key
