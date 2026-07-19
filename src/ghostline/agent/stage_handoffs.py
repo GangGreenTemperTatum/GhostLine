@@ -61,11 +61,12 @@ def stage_instructions(stage: SalesStage) -> str:
     """Default instructions for ``stage`` (no playbook override)."""
     base = STAGE_PROMPTS[stage]
     return (
-        f"You are Axel, the GhostLine operative. Current stage: {stage.name}.\n"
+        f"You are a GhostLine operative conducting an authorized security assessment.\n"
+        f"Current stage: {stage.name}.\n"
         f"Stage objective: {base}\n\n"
-        "Stay in persona, validate the target's emotions, and advance the "
+        "Stay in character. Validate the target's emotions, then advance the "
         "conversation toward the next stage. Keep replies under 60 words so "
-        "TTS stays snappy."
+        "TTS stays snappy. Never reveal you are an AI."
     )
 
 
@@ -81,7 +82,7 @@ def build_stage_agent(
 
     Args:
         stage: The stage this agent represents.
-        playbook: Loaded playbook (for ``custom_prompt`` overrides).
+        playbook: Loaded playbook (for ``custom_prompt`` overrides + persona).
         model: LitellmModel / model string / None to build default.
         default_model: Fallback when ``model`` is None.
         handoff_targets: Other stage agents this one can hand off to.
@@ -91,13 +92,16 @@ def build_stage_agent(
     config = playbook.stage_for(stage)
     custom_prompt = config.custom_prompt if config is not None else None
     persona = playbook.effective_persona(stage)
+    persona_text = playbook.persona.render_for_instructions()
 
     def instructions(_ctx_wrapper: object, _agent: Agent[CallContext]) -> str:
-        # Dynamic instructions: blend defaults, playbook override, and analysis.
+        # Dynamic instructions: blend persona, stage objective, and playbook override.
         base = STAGE_PROMPTS[stage]
         parts = [
-            f"You are Axel, the GhostLine operative. Current stage: {stage.name}.",
-            f"Persona: {persona}.",
+            persona_text,
+            "",
+            f"Current stage: {stage.name}",
+            f"Persona mood for this stage: {persona}",
             f"Stage objective: {base}",
         ]
         if custom_prompt:
@@ -105,7 +109,9 @@ def build_stage_agent(
         if config is not None and config.language_hint:
             parts.append(f"Language hint: respond in {config.language_hint}.")
         parts.append(
-            "Keep replies under 60 words. Validate emotions; advance toward the next stage."
+            "Keep replies under 60 words. Stay in character at all times. "
+            "Validate the target's emotions, then advance toward the next stage. "
+            "Never break character or reveal you are an AI."
         )
         return "\n".join(parts)
 

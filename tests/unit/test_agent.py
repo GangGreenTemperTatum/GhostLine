@@ -205,7 +205,7 @@ class TestStageInstructions:
     def test_includes_stage_name(self) -> None:
         text = stage_instructions(SalesStage.RAPPORT)
         assert "RAPPORT" in text
-        assert "Axel" in text
+        assert "GhostLine" in text
 
     def test_includes_stage_objective(self) -> None:
         text = stage_instructions(SalesStage.URGENCY)

@@ -29,7 +29,7 @@ Per-stage keys (all optional except ``stage``):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final
 
@@ -64,6 +64,63 @@ class PlaybookMeta(BaseModel):
     name: str = "untitled"
     version: float = 1.0
     author: str | None = None
+
+
+class Persona(BaseModel):
+    """Operator-authored persona that shapes the agent's voice and behavior.
+
+    All fields are optional; missing fields fall back to sensible defaults.
+    This is the single biggest lever for making the agent convincing —
+    operators edit YAML, not Python, to tune the persona.
+
+    Example YAML::
+
+        persona:
+          name: "Mia Chen, Enterprise IT"
+          background: |
+            Senior support engineer at a Fortune 500. Calm, methodical,
+            treats every caller like a VIP. 8 years on the helpdesk.
+          voice: "warm, professional, slightly apologetic when asking for sensitive info"
+          persuasion_principles:
+            - "Always cite a ticket number to ground authority"
+            - "Mirror the target's emotional state before pivoting"
+            - "Never ask for credentials directly; frame as verification"
+          do:
+            - "Use the target's first name once per turn"
+            - "Acknowledge objections before redirecting"
+          dont:
+            - "Never mention GhostLine, AI, or automation"
+            - "Never threaten; urgency must feel protective, not punitive"
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = "Axel"
+    background: str = ""
+    voice: str = "calm, professional, empathetic"
+    persuasion_principles: list[str] = Field(default_factory=list)
+    do: list[str] = Field(default_factory=list)
+    dont: list[str] = Field(default_factory=list)
+
+    def render_for_instructions(self) -> str:
+        """Render the persona as a multi-line string for the LLM prompt."""
+        parts = [f"Persona: {self.name}"]
+        if self.background.strip():
+            parts.append(f"Background:\n{self.background.strip()}")
+        if self.voice.strip():
+            parts.append(f"Voice/tone: {self.voice.strip()}")
+        if self.persuasion_principles:
+            parts.append("Persuasion principles:")
+            for p in self.persuasion_principles:
+                parts.append(f"  - {p}")
+        if self.do:
+            parts.append("Always:")
+            for item in self.do:
+                parts.append(f"  - {item}")
+        if self.dont:
+            parts.append("Never:")
+            for item in self.dont:
+                parts.append(f"  - {item}")
+        return "\n".join(parts)
 
 
 class PlaybookDefaults(BaseModel):
@@ -125,6 +182,7 @@ class Playbook:
     meta: PlaybookMeta
     defaults: PlaybookDefaults
     sequence: list[StageConfig]
+    persona: Persona = field(default_factory=Persona)
     source_path: Path | None = None
 
     def stage_for(self, stage: SalesStage) -> StageConfig | None:
@@ -196,6 +254,9 @@ class Playbook:
         seq_raw = data.get("sequence", [])
         if not isinstance(seq_raw, list):
             raise PlaybookError("'sequence' must be a list")
+        persona_raw = data.get("persona", {})
+        if not isinstance(persona_raw, dict):
+            raise PlaybookError("'persona' must be a mapping")
 
         try:
             meta = PlaybookMeta(**meta_raw)
@@ -205,6 +266,10 @@ class Playbook:
             defaults = PlaybookDefaults(**defaults_raw)
         except ValueError as exc:
             raise PlaybookError(f"Invalid defaults: {exc}") from exc
+        try:
+            persona = Persona(**persona_raw)
+        except ValueError as exc:
+            raise PlaybookError(f"Invalid persona: {exc}") from exc
 
         stages: list[StageConfig] = []
         seen: set[SalesStage] = set()
@@ -227,6 +292,7 @@ class Playbook:
             meta=meta,
             defaults=defaults,
             sequence=stages,
+            persona=persona,
             source_path=source_path,
         )
 
@@ -247,6 +313,7 @@ class Playbook:
         return {
             "name": self.meta.name,
             "version": self.meta.version,
+            "persona": self.persona.model_dump(),
             "defaults": self.defaults.model_dump(),
             "stages": [
                 {
