@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+from ghostline.agent.capabilities import ModelCapabilities
 from ghostline.agent.reply_generator import ReplyGenerator
 from ghostline.audio.ambient import AmbientNoise
 from ghostline.persistence.repository import CallRecord, MessageRecord, Repository
@@ -75,6 +76,7 @@ class ServerDeps:
     voice_id: str = ""
     ngrok_ws_url: str | None = None
     reply_generator: ReplyGenerator | None = None
+    capabilities: ModelCapabilities | None = None
 
 
 class CallSession:
@@ -108,6 +110,20 @@ class CallSession:
         # Create a fresh per-call context for the reply generator.
         if deps.reply_generator is not None:
             self._call_context = deps.reply_generator.new_context()
+        # Log the active voice modality so operators can see which pipeline
+        # is running (text vs realtime). The capabilities are detected once
+        # at startup by the composition root.
+        caps = deps.capabilities
+        if caps is not None:
+            _LOGGER.info(
+                "CallSession voice modality: %s (native_stt=%s, native_tts=%s, "
+                "needs_deepgram=%s, needs_elevenlabs=%s)",
+                caps.modality.value,
+                caps.native_stt,
+                caps.native_tts,
+                caps.needs_deepgram,
+                caps.needs_elevenlabs,
+            )
 
     async def run(self) -> None:
         """Main per-call coroutine: accept WS, run pump_in + pump_out + silence_monitor."""
@@ -155,7 +171,20 @@ class CallSession:
                 return
 
     async def _open_deepgram(self) -> None:
-        """Open a Deepgram WSS for this call."""
+        """Open a Deepgram WSS for this call — unless the model handles STT natively.
+
+        If the active LLM model supports native audio input (e.g. a realtime
+        model), Deepgram is redundant and we skip it. The capability check
+        happens once at startup; here we just read the result.
+        """
+        caps = self._deps.capabilities
+        if caps is not None and not caps.needs_deepgram:
+            _LOGGER.info(
+                "Skipping Deepgram — model %s handles STT natively (modality=%s)",
+                caps.model,
+                caps.modality.value,
+            )
+            return
         self.deepgram = DeepgramClient(
             self._deps.deepgram_api_key,
             language=self._deps.deepgram_language,

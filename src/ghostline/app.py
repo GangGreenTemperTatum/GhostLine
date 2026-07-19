@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import uvicorn
 
+from ghostline.agent.capabilities import detect_capabilities
 from ghostline.agent.model import build_model
 from ghostline.agent.reply_generator import ReplyGenerator
 from ghostline.audio.ambient import AmbientNoise
@@ -113,6 +114,22 @@ class SalesAutomationApp:
             api_base=self.settings.litellm_api_base,
         )
         reply_gen = ReplyGenerator(playbook=self.playbook, model=model)
+
+        # Detect model capabilities (native voice vs text-only) so the call
+        # handler knows whether to open Deepgram/ElevenLabs or bridge directly
+        # to a realtime model WSS. This replaces string-prefix matching.
+        caps = detect_capabilities(self.settings.litellm_model)
+        _LOGGER.info(
+            "Model capabilities: model=%s modality=%s native_stt=%s native_tts=%s "
+            "needs_deepgram=%s needs_elevenlabs=%s source=%s",
+            caps.model,
+            caps.modality.value,
+            caps.native_stt,
+            caps.native_tts,
+            caps.needs_deepgram,
+            caps.needs_elevenlabs,
+            caps.source,
+        )
         _LOGGER.info(
             "ReplyGenerator built (model=%s, playbook=%s, api_key=%s)",
             self.settings.litellm_model,
@@ -131,6 +148,7 @@ class SalesAutomationApp:
             voice_id=voice_id,
             ngrok_ws_url=t.ws_url,
             reply_generator=reply_gen,
+            capabilities=caps,
         )
         fastapi_app = create_app(deps)
         try:
