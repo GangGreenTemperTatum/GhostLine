@@ -1,38 +1,37 @@
 #!/usr/bin/env python3
 
-import os
-import sys
 import argparse
 import asyncio
-import json
 import base64
-import logging
 import io
-from datetime import datetime
+import json
+import logging
+import os
 import ssl
-from typing import Any, Dict, Optional
-from starlette.websockets import WebSocketState
-import aiohttp
+import sys
+import wave
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 import certifi
-from aiohttp import TCPConnector, ClientSession, FormData
+import numpy as np
+import uvicorn
+import yaml
+from aiohttp import ClientSession, FormData, TCPConnector
 from aiohttp.client_exceptions import ClientResponseError
-from fastapi import FastAPI, WebSocket, Request, HTTPException
+from data import STAGE_CHECKINS, STAGE_TIMINGS, SalesStage
+from database import init_db
+from deepgram import DeepgramClient
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-import uvicorn
-from twilio.rest import Client as TwilioClient
-from deepgram import DeepgramClient
-from pydub import AudioSegment
-import wave
-import numpy as np
-from scipy.signal import resample_poly
-import yaml
-from pathlib import Path
-from database import init_db
-from data import PROSODY_VARIATIONS, STAGE_CHECKINS, STAGE_TIMINGS, SalesStage
 from nlp import generate_sales_reply
-from dotenv import load_dotenv
+from pydub import AudioSegment
+from scipy.signal import resample_poly
+from starlette.websockets import WebSocketState
+from twilio.rest import Client as TwilioClient
 
 # ------------------------
 # Logging Configuration
@@ -40,9 +39,10 @@ from dotenv import load_dotenv
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("SalesAutomation")
+
 
 # ------------------------
 # Configuration & SSL
@@ -51,16 +51,16 @@ class Config:
     def __init__(self):
         logger.info("Loading configuration from environment variables")
         load_dotenv()
-        self.twilio_sid    = os.getenv("TWILIO_ACCOUNT_SID")
-        self.twilio_token  = os.getenv("TWILIO_AUTH_TOKEN")
-        self.twilio_from   = os.getenv("TWILIO_FROM_NUMBER")
-        self.openai_key    = os.getenv("OPENAI_API_KEY")
-        self.deepgram_key  = os.getenv("DEEPGRAM_API_KEY")
-        self.eleven_key    = os.getenv("ELEVENLABS_API_KEY")
-        self.ngrok_token   = os.getenv("NGROK_AUTHTOKEN")
-        self.db_path       = os.getenv("SQLITE_DB_PATH", "sales_tracking.db")
-        self.babble_noise  = os.getenv("BABBLE_NOISE_PATH", "ambient_noise.wav")
-        
+        self.twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+        self.twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+        self.twilio_from = os.getenv("TWILIO_FROM_NUMBER")
+        self.openai_key = os.getenv("OPENAI_API_KEY")
+        self.deepgram_key = os.getenv("DEEPGRAM_API_KEY")
+        self.eleven_key = os.getenv("ELEVENLABS_API_KEY")
+        self.ngrok_token = os.getenv("NGROK_AUTHTOKEN")
+        self.db_path = os.getenv("SQLITE_DB_PATH", "sales_tracking.db")
+        self.babble_noise = os.getenv("BABBLE_NOISE_PATH", "ambient_noise.wav")
+
         # Validate environment variables
         missing_vars = []
         for var_name, var_value in [
@@ -70,15 +70,15 @@ class Config:
             ("OPENAI_API_KEY", self.openai_key),
             ("DEEPGRAM_API_KEY", self.deepgram_key),
             ("ELEVENLABS_API_KEY", self.eleven_key),
-            ("NGROK_AUTHTOKEN", self.ngrok_token)
+            ("NGROK_AUTHTOKEN", self.ngrok_token),
         ]:
             if not var_value:
                 missing_vars.append(var_name)
-        
+
         if missing_vars:
             logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
             sys.exit(1)
-            
+
         # Basic validation of API keys
         if len(self.deepgram_key) < 10:
             logger.error("DEEPGRAM_API_KEY appears to be invalid (too short)")
@@ -86,20 +86,22 @@ class Config:
         if len(self.eleven_key) < 10:
             logger.error("ELEVENLABS_API_KEY appears to be invalid (too short)")
             sys.exit(1)
-            
+
         logger.info("Environment variables loaded successfully")
-        
+
         # SSL context
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
         os.environ["SSL_CERT_FILE"] = certifi.where()
         os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
         logger.info("SSL context configured with certifi CA bundle")
 
+
 # ------------------------
 # Ambient Noise Manager
 # ------------------------
 class AmbientNoise:
-    BASE_RATIO = 0.1  
+    BASE_RATIO = 0.1
+
     def __init__(self, path: str, target_rate=8000):
         logger.info("Initializing ambient noise from %s", path)
         self.target_rate = target_rate
@@ -108,31 +110,35 @@ class AmbientNoise:
 
     def _load(self, path: str) -> bytes:
         try:
-            wf = wave.open(path, 'rb')
+            wf = wave.open(path, "rb")
             raw = wf.readframes(wf.getnframes())
             samples = np.frombuffer(raw, dtype=np.int16)
             if wf.getnchannels() > 1:
                 samples = samples.reshape(-1, wf.getnchannels()).mean(axis=1).astype(np.int16)
             if wf.getframerate() != self.target_rate:
-                samples = resample_poly(samples, self.target_rate, wf.getframerate()).astype(np.int16)
+                samples = resample_poly(samples, self.target_rate, wf.getframerate()).astype(
+                    np.int16
+                )
             wf.close()
             logger.info("Loaded ambient noise file successfully")
             return samples.tobytes()
         except FileNotFoundError:
-            samples = np.random.normal(0, 50, self.target_rate * 10).astype(np.int16)  # Reduced amplitude
+            samples = np.random.normal(0, 50, self.target_rate * 10).astype(
+                np.int16
+            )  # Reduced amplitude
             logger.warning("Ambient noise file not found; using synthetic noise")
             return samples.tobytes()
 
     def mix(self, pcm: bytes, level=0.3) -> bytes:  # Default level reduced to 0.3
         ratio = min(level, 1.0) * self.BASE_RATIO
         needed = len(pcm)
-        out = b''
+        out = b""
         idx = self.idx  # Use local variable to avoid race conditions
         while len(out) < needed:
             remaining = needed - len(out)
             chunk = self.buffer[idx : idx + remaining]
             if len(chunk) < remaining:  # Wrap around
-                chunk += self.buffer[:remaining - len(chunk)]
+                chunk += self.buffer[: remaining - len(chunk)]
                 idx = remaining - len(chunk)
             else:
                 idx += len(chunk)
@@ -142,14 +148,17 @@ class AmbientNoise:
         # Try audioop first, fall back to NumPy if not available
         try:
             import audioop
+
             # Using audioop for audio mixing (original implementation)
             pcm_boosted = audioop.mul(pcm, 2, 1.5)
             ambient = audioop.mul(out, 2, ratio)
             mixed = audioop.add(pcm_boosted, ambient, 2)
-            logger.debug("Mixed audio with ambient noise using audioop (level=%s)",     level)
+            logger.debug("Mixed audio with ambient noise using audioop (level=%s)", level)
             return mixed
         except (ImportError, Exception) as e:
-            logger.info(f"audioop not available or failed ({type(e).__name__}),     using NumPy fallback")
+            logger.info(
+                f"audioop not available or failed ({type(e).__name__}),     using NumPy fallback"
+            )
 
             # Using NumPy for audio mixing as fallback
             try:
@@ -164,9 +173,13 @@ class AmbientNoise:
 
                 # Mix the two signals (equivalent to audioop.add)
                 # Use clipping to prevent integer overflow
-                mixed_samples = np.clip(pcm_boosted + ambient_scaled, -32768,   32767).astype(np.int16)
+                mixed_samples = np.clip(pcm_boosted + ambient_scaled, -32768, 32767).astype(
+                    np.int16
+                )
                 mixed = mixed_samples.tobytes()
-                logger.debug("Mixed audio with ambient noise using NumPy fallback   (level=%s)", level)
+                logger.debug(
+                    "Mixed audio with ambient noise using NumPy fallback   (level=%s)", level
+                )
                 return mixed
             except Exception as e:
                 logger.error(f"Audio mixing error with NumPy: {e}")
@@ -177,35 +190,41 @@ class AmbientNoise:
         try:
             # Try audioop first
             import audioop
+
             encoded = audioop.lin2ulaw(pcm, 2)
-            logger.debug("Converted PCM to µ-law format using audioop, %d bytes",   len(encoded))
+            logger.debug("Converted PCM to µ-law format using audioop, %d bytes", len(encoded))
             return encoded
         except (ImportError, Exception) as e:
-            logger.info(f"audioop not available or failed ({type(e).__name__}),     using NumPy fallback")
-            
+            logger.info(
+                f"audioop not available or failed ({type(e).__name__}),     using NumPy fallback"
+            )
+
             # Fall back to NumPy implementation
             try:
                 # Convert PCM bytes to 16-bit samples
                 samples = np.frombuffer(pcm, dtype=np.int16)
-    
+
                 # Normalize to float in range [-1, 1]
                 samples_float = samples.astype(float) / 32768.0
-    
+
                 # µ-law encoding algorithm
                 mu = 255  # mu-law parameter
-                encoded_samples = np.sign(samples_float) * np.log(1 + mu * np.abs   (samples_float)) / np.log(1 + mu)
-    
+                encoded_samples = (
+                    np.sign(samples_float) * np.log(1 + mu * np.abs(samples_float)) / np.log(1 + mu)
+                )
+
                 # Scale to range [0, 255] for uint8
                 encoded_samples = ((encoded_samples + 1) * 127.5).astype(np.uint8)
-    
+
                 # Convert back to bytes
                 encoded = encoded_samples.tobytes()
-                logger.debug("Converted PCM to µ-law format using NumPy, %d bytes",     len(encoded))
+                logger.debug("Converted PCM to µ-law format using NumPy, %d bytes", len(encoded))
                 return encoded
             except Exception as e:
                 logger.error(f"Error in µ-law conversion: {e}")
                 # Return a valid but empty µ-law stream
-                return b'\x7f' * (len(pcm) // 4)  # Approximate size reduction
+                return b"\x7f" * (len(pcm) // 4)  # Approximate size reduction
+
 
 # ------------------------
 # Playbook Loader
@@ -216,7 +235,7 @@ class Playbook:
         self.seq = self.load(path)
 
     @staticmethod
-    def load(path: str) -> list[Dict[str, Any]]:
+    def load(path: str) -> list[dict[str, Any]]:
         p = Path(path)
         if not p.exists():
             logger.error("Playbook file not found: %s", path)
@@ -224,12 +243,15 @@ class Playbook:
         data = yaml.safe_load(p.read_text())
         seq = []
         for entry in data.get("sequence", []):
-            seq.append({
-                "stage": SalesStage[entry["stage"]],
-                **{k: entry.get(k) for k in entry if k != "stage"}
-            })
+            seq.append(
+                {
+                    "stage": SalesStage[entry["stage"]],
+                    **{k: entry.get(k) for k in entry if k != "stage"},
+                }
+            )
         logger.info("Loaded %d playbook stages", len(seq))
         return seq
+
 
 # ------------------------
 # ElevenLabs Voice Cloner & TTS
@@ -240,16 +262,16 @@ class VoiceService:
         self.ssl = ssl_context
         logger.info("VoiceService initialized with ElevenLabs API")
 
-    async def clone(self, sample_path: str, name="sales_voice") -> Optional[str]:
+    async def clone(self, sample_path: str, name="sales_voice") -> str | None:
         logger.info("Cloning voice from sample: %s (name=%s)", sample_path, name)
         ext = os.path.splitext(sample_path)[1].lower()
-        if ext == '.m4a':
-            audio_seg = AudioSegment.from_file(sample_path, format='m4a')
+        if ext == ".m4a":
+            audio_seg = AudioSegment.from_file(sample_path, format="m4a")
             buf = io.BytesIO()
-            audio_seg.export(buf, format='wav')
+            audio_seg.export(buf, format="wav")
             data = buf.getvalue()
         else:
-            data = open(sample_path, 'rb').read()
+            data = open(sample_path, "rb").read()
         url = "https://api.elevenlabs.io/v1/voices/add"
         logger.info("ElevenLabs API URL for cloning: %s", url)
         headers = {"xi-api-key": self.api_key}
@@ -267,7 +289,7 @@ class VoiceService:
                 logger.error("Voice cloning failed (status=%d): %s", resp.status, text)
         return None
 
-    async def synth(self, text: str, voice_id: str, persona: str="default") -> bytes:
+    async def synth(self, text: str, voice_id: str, persona: str = "default") -> bytes:
         logger.info("Synthesizing TTS: voice_id=%s, persona=%s", voice_id, persona)
         # ElevenLabs doesn't support SSML, just use plain text
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
@@ -275,13 +297,13 @@ class VoiceService:
         headers = {"xi-api-key": self.api_key, "Content-Type": "application/json"}
         payload = {
             "text": text,  # Plain text, not SSML
-            "model_id": "eleven_monolingual_v1", 
+            "model_id": "eleven_monolingual_v1",
             "voice_settings": {
-                "stability": 0.9, 
+                "stability": 0.9,
                 "similarity_boost": 0.99,
                 "style": 0.9,  # Add style parameter for more expression
-                "use_speaker_boost": False  # Enhance speaker presence
-            }
+                "use_speaker_boost": False,  # Enhance speaker presence
+            },
         }
         async with ClientSession(connector=TCPConnector(ssl=self.ssl)) as sess:
             try:
@@ -290,10 +312,11 @@ class VoiceService:
                         error_text = await resp.text()
                         logger.error(f"ElevenLabs API error {resp.status}: {error_text}")
                         # Return a simple beep instead of silence
-                        seg = AudioSegment.silent(duration=100) + \
-                              AudioSegment.from_raw(bytes([0x80, 0xFF] * 100), sample_width=1, frame_rate=8000, channels=1)
+                        seg = AudioSegment.silent(duration=100) + AudioSegment.from_raw(
+                            bytes([0x80, 0xFF] * 100), sample_width=1, frame_rate=8000, channels=1
+                        )
                         return seg.raw_data
-                        
+
                     mp3 = await resp.read()
                     logger.info(f"Received audio data from ElevenLabs: {len(mp3)} bytes")
 
@@ -303,7 +326,7 @@ class VoiceService:
                         seg = AudioSegment.silent(duration=500)
                     else:
                         seg = AudioSegment.from_file(io.BytesIO(mp3), format="mp3")
-                    
+
                     # Normalize and boost the audio
                     seg = seg.normalize(headroom=0.1)  # Normalize to near maximum volume
                     seg = seg.set_frame_rate(8000).set_channels(1)
@@ -316,6 +339,7 @@ class VoiceService:
                 seg = AudioSegment.silent(duration=500)
                 seg = seg.set_frame_rate(8000).set_channels(1)
                 return seg.raw_data
+
 
 # ------------------------
 # Deepgram Handler
@@ -359,20 +383,30 @@ class DeepgramHandler:
         except Exception as e:
             logger.error(f"Error closing Deepgram connection: {e}")
 
+
 # ------------------------
 # Twilio & WebSocket Handler
 # ------------------------
 class CallHandler:
-    def __init__(self, config: Config, ambient: AmbientNoise, voice_svc: VoiceService,
-                 dg: DeepgramHandler, playbook: Optional[Playbook], db_conn):
+    def __init__(
+        self,
+        config: Config,
+        ambient: AmbientNoise,
+        voice_svc: VoiceService,
+        dg: DeepgramHandler,
+        playbook: Playbook | None,
+        db_conn,
+    ):
         self.cfg = config
         self.ambient = ambient
         self.voice_svc = voice_svc
         self.dg = dg
         self.playbook_seq = playbook.seq if playbook else None
         self.db = db_conn
-        logger.info("CallHandler initialized with playbook stages: %s",
-                    [s['stage'].name for s in (self.playbook_seq or [])])
+        logger.info(
+            "CallHandler initialized with playbook stages: %s",
+            [s["stage"].name for s in (self.playbook_seq or [])],
+        )
 
     async def handle(self, ws: WebSocket, voice_id: str, campaign: str, persona: str):
         logger.info("New WebSocket connection: campaign=%s, persona=%s", campaign, persona)
@@ -385,56 +419,58 @@ class CallHandler:
         stream_sid = None
         caller_number = None
         greeting_task = None  # Initialize greeting_task properly
-        
+
         # Wait for the start event to get the necessary information
         try:
             first_msg = await ws.receive_text()  # Fix: remove asyncio.run()
             data = json.loads(first_msg)
             logger.debug(f"First message event: {data.get('event')}")
-            
+
             # Twilio usually sends connected then start
             while data.get("event") != "start":
                 first_msg = await ws.receive_text()  # Fix: remove asyncio.run()
                 data = json.loads(first_msg)
                 logger.debug(f"Waiting for start event, got: {data.get('event')}")
-            
+
             if data.get("event") == "start":
                 stream_sid = data.get("streamSid")
                 start_data = data.get("start", {})
                 call_sid = start_data.get("callSid")
                 custom_parameters = start_data.get("customParameters", {})
                 caller_number = custom_parameters.get("from", start_data.get("from"))
-                logger.info(f"Start event received: CallSid={call_sid}, StreamSid={stream_sid}, Caller={caller_number}")
-                
+                logger.info(
+                    f"Start event received: CallSid={call_sid}, StreamSid={stream_sid}, Caller={caller_number}"
+                )
+
         except Exception as e:
             logger.error(f"Error processing start event: {e}", exc_info=True)
             call_sid = "unknown"
-            
-        logger.info("CallSid=%s accepted", call_sid)        
-        
+
+        logger.info("CallSid=%s accepted", call_sid)
+
         # Insert call record
         try:
             self.db.execute(
                 "INSERT OR IGNORE INTO calls VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (call_sid, None, None, voice_id, campaign, persona, None, None, None, None)
+                (call_sid, None, None, voice_id, campaign, persona, None, None, None, None),
             )
             self.db.commit()
             logger.debug("Inserted call record into DB for %s", call_sid)
         except Exception as e:
             logger.error(f"Failed to insert call record: {e}")
-        
+
         # Insert profile
         if caller_number:
             try:
                 self.db.execute(
                     "INSERT OR IGNORE INTO customer_profiles VALUES(?,?,?,?,?,?)",
-                    (caller_number, None, None, None, persona, None)
+                    (caller_number, None, None, None, persona, None),
                 )
                 self.db.commit()
                 logger.debug("Inserted customer profile for %s", caller_number)
             except Exception as e:
                 logger.error(f"Failed to insert customer profile: {e}")
-        
+
         # Deepgram connection
         try:
             await self.dg.connect()
@@ -442,37 +478,41 @@ class CallHandler:
             logger.error(f"Failed to connect to Deepgram: {e}")
             await ws.close(1011, "Failed to initialize speech recognition")
             return
-            
+
         current_stage = SalesStage.RAPPORT
         last_activity = asyncio.get_event_loop().time()
         check_in_sent = False
-        
+
         # Define nested functions properly indented within handle method
         async def send_greeting():
             nonlocal stream_sid
-            if hasattr(send_greeting, 'already_sent'):
+            if hasattr(send_greeting, "already_sent"):
                 logger.warning("send_greeting called multiple times, ignoring")
                 return
             send_greeting.already_sent = True
-            
+
             try:
                 if not stream_sid:
                     logger.error("send_greeting called without stream_sid")
                     return
-                    
+
                 # Get initial greeting from playbook or use default
                 greeting = "Hello! Thanks for taking my call today. How are you doing?"
-                
+
                 # Check if playbook has a custom prompt for RAPPORT stage
                 if self.playbook_seq:
-                    logger.info(f"Greeting: Checking playbook with {len(self.playbook_seq)} stages for RAPPORT")
+                    logger.info(
+                        f"Greeting: Checking playbook with {len(self.playbook_seq)} stages for RAPPORT"
+                    )
                     for stage_config in self.playbook_seq:
                         logger.debug(f"Greeting: Checking stage {stage_config['stage'].name}")
                         if stage_config["stage"] == SalesStage.RAPPORT:
                             custom_prompt = stage_config.get("custom_prompt")
                             if custom_prompt:
                                 greeting = custom_prompt.strip()
-                                logger.info(f"Greeting: Using playbook RAPPORT prompt: {greeting[:100]}...")
+                                logger.info(
+                                    f"Greeting: Using playbook RAPPORT prompt: {greeting[:100]}..."
+                                )
                             else:
                                 logger.info("Greeting: Found RAPPORT stage but no custom_prompt")
                             break
@@ -480,16 +520,16 @@ class CallHandler:
                         logger.warning("Greeting: RAPPORT stage not found in playbook")
                 else:
                     logger.info("Greeting: No playbook available, using default greeting")
-                
+
                 logger.info(f"Sending initial greeting: {greeting[:100]}...")
-                
+
                 pcm = await self.voice_svc.synth(greeting, voice_id, persona)
                 logger.info(f"Got {len(pcm)} bytes of PCM from ElevenLabs")
-                
+
                 mixed = self.ambient.mix(pcm, 0.2)  # Low ambient noise for clarity
                 ulaw = self.ambient.ulaw(mixed)
                 logger.info(f"Converted to {len(ulaw)} bytes of µ-law audio")
-                
+
                 # Send the audio in chunks
                 chunk_size = 160  # Standard µ-law chunk size for Twilio
                 chunks_sent = 0
@@ -498,15 +538,13 @@ class CallHandler:
                         if ws.client_state != WebSocketState.CONNECTED:
                             logger.warning("WebSocket disconnected during greeting")
                             break
-                        
-                        chunk = base64.b64encode(ulaw[i:i+chunk_size]).decode('ascii')
-                        json_msg = json.dumps({
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {"payload": chunk}
-                        })
+
+                        chunk = base64.b64encode(ulaw[i : i + chunk_size]).decode("ascii")
+                        json_msg = json.dumps(
+                            {"event": "media", "streamSid": stream_sid, "media": {"payload": chunk}}
+                        )
                         # Test if it's valid JSON
-                        json.loads(json_msg)  
+                        json.loads(json_msg)
                         await ws.send_text(json_msg)
                         chunks_sent += 1
                     except Exception as e:
@@ -540,7 +578,9 @@ class CallHandler:
 
                     if silent_time >= threshold and not check_in_sent:
                         text = STAGE_CHECKINS[current_stage]
-                        logger.info(f"Silence threshold hit ({silent_time:.1f}s) – sending check-in: {text}")
+                        logger.info(
+                            f"Silence threshold hit ({silent_time:.1f}s) – sending check-in: {text}"
+                        )
 
                         try:
                             pcm = await self.voice_svc.synth(text, voice_id, persona)
@@ -550,14 +590,18 @@ class CallHandler:
                             chunk_size = 160  # Standard µ-law chunk size for Twilio
                             for i in range(0, len(ulaw), chunk_size):
                                 try:
-                                    chunk = base64.b64encode(ulaw[i:i+chunk_size]).decode('ascii')
-                                    json_msg = json.dumps({
-                                        "event": "media",
-                                        "streamSid": stream_sid,
-                                        "media": {"payload": chunk}
-                                    })
+                                    chunk = base64.b64encode(ulaw[i : i + chunk_size]).decode(
+                                        "ascii"
+                                    )
+                                    json_msg = json.dumps(
+                                        {
+                                            "event": "media",
+                                            "streamSid": stream_sid,
+                                            "media": {"payload": chunk},
+                                        }
+                                    )
                                     # Test if it's valid JSON
-                                    json.loads(json_msg)  
+                                    json.loads(json_msg)
                                     await ws.send_text(json_msg)
                                 except Exception as e:
                                     logger.error(f"JSON serialization error: {e}")
@@ -567,7 +611,7 @@ class CallHandler:
                             last_activity = asyncio.get_event_loop().time()
                         except Exception as e:
                             logger.error(f"Failed to send check-in message: {e}")
-                            
+
             except asyncio.CancelledError:
                 logger.info("monitor_silence task cancelled")
             except Exception as e:
@@ -576,30 +620,30 @@ class CallHandler:
         # Create and start tasks
         silence_task = asyncio.create_task(monitor_silence())
         greeting_task = None  # We'll start this after we have stream_sid
-        
+
         if stream_sid:
             greeting_task = asyncio.create_task(send_greeting())
             logger.info("Greeting task started immediately after receiving stream_sid")
         else:
             logger.error("No stream_sid received in start event!")
-        
+
         async def pump_in():
             nonlocal last_activity, check_in_sent, stream_sid, greeting_task
             try:
                 logger.info("pump_in started.")
-                
+
                 while True:
                     try:
                         # For FastAPI WebSocket, we need to use different methods
                         msg = await ws.receive_text()
-                        
+
                         data = json.loads(msg)
                         event_type = data.get("event")
                         logger.debug(f"pump_in event received: {event_type}")
 
                         if event_type == "connected":
                             logger.info("Twilio connected event received")
-                        
+
                         elif event_type == "start":
                             # This shouldn't happen as we already processed it
                             logger.warning("Received duplicate start event")
@@ -607,7 +651,7 @@ class CallHandler:
                         elif event_type == "media":
                             payload = data["media"]["payload"]
                             frame = base64.b64decode(payload)
-                            
+
                             # Send the original mu-law data directly to Deepgram
                             try:
                                 await self.dg.send(frame)
@@ -623,9 +667,9 @@ class CallHandler:
                         elif event_type == "stop":
                             logger.info("Call stop event received.")
                             break
-                            
+
                     except json.JSONDecodeError:
-                        logger.error(f"Invalid JSON in message")
+                        logger.error("Invalid JSON in message")
                     except Exception as e:
                         logger.error(f"Error processing message: {e}")
                         if "closed" in str(e).lower():
@@ -648,45 +692,51 @@ class CallHandler:
             waiting_for_utterance_end = False
             last_speech_final_time = 0
             last_words_time = 0
-            
+
             logger.info("pump_out started.")
             try:
                 async for data in self.dg.client.receive_final():
                     current_time = asyncio.get_event_loop().time()
-                    
+
                     # Handle transcript data
                     if isinstance(data, dict):
                         if data.get("type") == "transcript":
                             transcript = data.get("transcript", "").strip()
                             speech_final = data.get("speech_final", False)
-                            
+
                             if transcript:
                                 # Add to buffer
-                                if buffer and not buffer.endswith(' '):
+                                if buffer and not buffer.endswith(" "):
                                     buffer += " "
                                 buffer += transcript
-                                
+
                                 # Reset silence detection
                                 last_activity = current_time
                                 check_in_sent = False
                                 last_words_time = current_time
-                                
-                                logger.debug(f"Buffer updated: '{buffer}' (speech_final: {speech_final})")
-                                
+
+                                logger.debug(
+                                    f"Buffer updated: '{buffer}' (speech_final: {speech_final})"
+                                )
+
                                 # Only process if speech_final and we have a meaningful utterance
                                 if speech_final:
                                     cleaned_transcript = buffer.strip()
-                                    
+
                                     # Check if the utterance is complete enough to process
                                     words = cleaned_transcript.split()
                                     is_complete_thought = (
-                                        len(words) >= 3 or  # At least 3 words
-                                        any(cleaned_transcript.endswith(p) for p in ['.', '?', '!']) or  # Has end punctuation
-                                        (current_time - last_words_time) > 1.5  # Long pause
+                                        len(words) >= 3  # At least 3 words
+                                        or any(
+                                            cleaned_transcript.endswith(p) for p in [".", "?", "!"]
+                                        )  # Has end punctuation
+                                        or (current_time - last_words_time) > 1.5  # Long pause
                                     )
-                                    
+
                                     if cleaned_transcript and is_complete_thought:
-                                        logger.info(f"Processing utterance from speech_final: '{cleaned_transcript}'")
+                                        logger.info(
+                                            f"Processing utterance from speech_final: '{cleaned_transcript}'"
+                                        )
                                         await process_utterance(cleaned_transcript)
                                         buffer = ""
                                         last_speech_final_time = current_time
@@ -697,17 +747,19 @@ class CallHandler:
                                 else:
                                     # Continue building buffer if not speech_final
                                     waiting_for_utterance_end = True
-                        
+
                         elif data.get("type") == "utterance_end":
                             # Process if we have buffer and were waiting for utterance_end
                             if waiting_for_utterance_end and buffer:
                                 cleaned_transcript = buffer.strip()
                                 if cleaned_transcript:
-                                    logger.info(f"Processing utterance from utterance_end: '{cleaned_transcript}'")
+                                    logger.info(
+                                        f"Processing utterance from utterance_end: '{cleaned_transcript}'"
+                                    )
                                     await process_utterance(cleaned_transcript)
                                     buffer = ""
                             waiting_for_utterance_end = False
-                    
+
             except Exception as e:
                 logger.exception(f"Unexpected pump_out error: {e}")
             finally:
@@ -718,72 +770,83 @@ class CallHandler:
         async def process_utterance(cleaned_transcript):
             """Helper function to process a complete utterance"""
             nonlocal current_stage, stream_sid
-            
+
             logger.info(f"Processing complete utterance: '{cleaned_transcript}'")
-            
+
             # Log user transcription to database
             try:
                 self.db.execute(
                     "INSERT INTO messages(call_sid, role, content, timestamp, sales_stage) VALUES (?, ?, ?, ?, ?)",
-                    (call_sid, "user", cleaned_transcript, datetime.utcnow().isoformat(), current_stage.name)
+                    (
+                        call_sid,
+                        "user",
+                        cleaned_transcript,
+                        datetime.utcnow().isoformat(),
+                        current_stage.name,
+                    ),
                 )
                 self.db.commit()
                 logger.debug("User transcription saved to DB.")
             except Exception as e:
                 logger.error(f"Failed to save user transcription: {e}")
-            
+
             # Generate NLP response
             try:
-                response, next_stage = await generate_sales_reply(call_sid, cleaned_transcript, current_stage, self.playbook_seq, self.db)
+                response, next_stage = await generate_sales_reply(
+                    call_sid, cleaned_transcript, current_stage, self.playbook_seq, self.db
+                )
                 logger.info(f"Generated sales reply: '{response}' | Next stage: {next_stage.name}")
             except Exception as e:
                 logger.error(f"Failed to generate sales reply: {e}")
                 response = "I appreciate what you're saying. Could you tell me more about that?"
                 next_stage = current_stage
-            
+
             current_stage = next_stage
-            
+
             # Ensure stream_sid is available
             for _ in range(10):
                 if stream_sid:
                     break
                 logger.warning("Waiting for stream_sid before sending response...")
                 await asyncio.sleep(0.5)
-            
+
             if not stream_sid:
                 logger.error("streamSid still not set, response NOT sent to Twilio.")
                 return
-            
+
             # Synthesize TTS response
             try:
                 pcm = await self.voice_svc.synth(response, voice_id, persona)
                 mixed = self.ambient.mix(pcm, 0.2)
                 ulaw = self.ambient.ulaw(mixed)
-                
+
                 chunk_size = 160  # µ-law chunk size
                 for i in range(0, len(ulaw), chunk_size):
-                    chunk = base64.b64encode(ulaw[i:i+chunk_size]).decode('ascii')
-                    json_msg = json.dumps({
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {"payload": chunk}
-                    })
+                    chunk = base64.b64encode(ulaw[i : i + chunk_size]).decode("ascii")
+                    json_msg = json.dumps(
+                        {"event": "media", "streamSid": stream_sid, "media": {"payload": chunk}}
+                    )
                     await ws.send_text(json_msg)
-                
+
                 logger.info("Synthesized audio response sent successfully.")
             except Exception as e:
                 logger.error(f"Failed to send TTS response: {e}")
-            
+
             # Log bot response to database
             try:
                 self.db.execute(
                     "INSERT INTO messages(call_sid, role, content, timestamp, sales_stage) VALUES (?, ?, ?, ?, ?)",
-                    (call_sid, "assistant", response, datetime.utcnow().isoformat(), current_stage.name)
+                    (
+                        call_sid,
+                        "assistant",
+                        response,
+                        datetime.utcnow().isoformat(),
+                        current_stage.name,
+                    ),
                 )
                 self.db.commit()
             except Exception as e:
                 logger.error(f"Failed to save bot response: {e}")
-
 
         try:
             # Run both pump tasks concurrently
@@ -798,25 +861,25 @@ class CallHandler:
                     await silence_task
                 except asyncio.CancelledError:
                     pass
-                    
+
             if greeting_task and not greeting_task.done():
                 greeting_task.cancel()
                 try:
                     await greeting_task
                 except asyncio.CancelledError:
                     pass
-            
+
             # Close any lingering connections
             try:
                 await self.dg.close()
             except:
                 pass
-            
+
             try:
                 await ws.close()
             except:
                 pass
-            
+
             logger.info(f"WebSocket handler for call {call_sid} completed.")
 
 
@@ -832,6 +895,7 @@ class DashboardApp:
 
     def _mount(self):
         self.app.mount("/static", StaticFiles(directory="static"), name="static")
+
         @self.app.get("/", response_class=HTMLResponse)
         async def root():
             logger.info("Dashboard root accessed")
@@ -844,21 +908,21 @@ class DashboardApp:
             if not ws_url:
                 logger.error("NGROK_WS_URL not set when handling /voice request")
                 raise HTTPException(500, "Tunnel not initialized")
-            
+
             # Handle query parameters properly for WebSocket URLs
-            campaign = req.query_params.get('campaign')
-            persona = req.query_params.get('persona')
-            
+            campaign = req.query_params.get("campaign")
+            persona = req.query_params.get("persona")
+
             if campaign:
                 ws_url += f"?campaign={campaign}"
                 if persona:
                     ws_url += f"&persona={persona}"
             elif persona:
                 ws_url += f"?persona={persona}"
-            
+
             # Escape ampersands for XML
-            xml_safe_url = ws_url.replace('&', '&amp;')
-            
+            xml_safe_url = ws_url.replace("&", "&amp;")
+
             logger.info("Providing TwiML stream URL: %s", ws_url)
             twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -869,6 +933,7 @@ class DashboardApp:
   <Pause length="300"/>
 </Response>"""
             return twiml
+
 
 # ------------------------
 # Main Application
@@ -881,11 +946,11 @@ class SalesAutomationApp:
         self.dg = DeepgramHandler(self.config.deepgram_key, self.config.ssl_context)
         self.db_conn = init_db(self.config.db_path)
         logger.info("SalesAutomationApp initialized")
-    
+
     def __del__(self):
         # Clean up database connection
         try:
-            if hasattr(self, 'db_conn'):
+            if hasattr(self, "db_conn"):
                 self.db_conn.close()
                 logger.info("Database connection closed")
         except Exception as e:
@@ -893,25 +958,25 @@ class SalesAutomationApp:
 
     def run(self):
         parser = argparse.ArgumentParser(description="Advanced Sales Automation System")
-        sub = parser.add_subparsers(dest='cmd', required=True)
+        sub = parser.add_subparsers(dest="cmd", required=True)
         # clone
-        c1 = sub.add_parser('clone', help="Clone a voice sample (WAV or M4A)")
-        c1.add_argument('sample', help="Path to sample file")
-        c1.add_argument('--name', default='sales_voice', help="Name for cloned voice")
+        c1 = sub.add_parser("clone", help="Clone a voice sample (WAV or M4A)")
+        c1.add_argument("sample", help="Path to sample file")
+        c1.add_argument("--name", default="sales_voice", help="Name for cloned voice")
         # serve
-        s1 = sub.add_parser('serve', help="Start server with specified voice")
-        s1.add_argument('--voice-id', required=True, help="ElevenLabs voice ID to use")
-        s1.add_argument('--port', type=int, default=8000, help="Port for FastAPI/Ngrok tunnel")
-        s1.add_argument('--playbook', help="Path to playbook YAML")
+        s1 = sub.add_parser("serve", help="Start server with specified voice")
+        s1.add_argument("--voice-id", required=True, help="ElevenLabs voice ID to use")
+        s1.add_argument("--port", type=int, default=8000, help="Port for FastAPI/Ngrok tunnel")
+        s1.add_argument("--playbook", help="Path to playbook YAML")
         # call
-        c2 = sub.add_parser('call', help="Place a call via Twilio and stream to /twilio")
-        c2.add_argument('phone', help="Phone number to dial (+E.164 format)")
-        c2.add_argument('--campaign', help="Campaign name for analytics")
-        c2.add_argument('--persona', help="Persona style for TTS prosody")
+        c2 = sub.add_parser("call", help="Place a call via Twilio and stream to /twilio")
+        c2.add_argument("phone", help="Phone number to dial (+E.164 format)")
+        c2.add_argument("--campaign", help="Campaign name for analytics")
+        c2.add_argument("--persona", help="Persona style for TTS prosody")
         args = parser.parse_args()
         logger.info("Running command: %s", args.cmd)
 
-        if args.cmd == 'clone':
+        if args.cmd == "clone":
             vid = asyncio.run(self.voice_svc.clone(args.sample, args.name))
             if vid:
                 logger.info("Clone complete, Voice ID: %s", vid)
@@ -920,43 +985,53 @@ class SalesAutomationApp:
                 logger.error("Voice cloning failed")
                 print("❌ Voice cloning failed.")
 
-        elif args.cmd == 'serve':
+        elif args.cmd == "serve":
             playbook = Playbook(args.playbook) if args.playbook else None
             if playbook:
-                logger.info("Loaded playbook with %d stages: %s", len(playbook.seq), [s['stage'].name for s in playbook.seq])
+                logger.info(
+                    "Loaded playbook with %d stages: %s",
+                    len(playbook.seq),
+                    [s["stage"].name for s in playbook.seq],
+                )
             else:
                 logger.info("No playbook loaded - using default behavior")
             logger.info("Starting server with voice ID %s on port %d", args.voice_id, args.port)
             # Ngrok tunnel
             from pyngrok import ngrok
+
             ngrok.set_auth_token(self.config.ngrok_token)
             public_url = ngrok.connect(args.port, "http").public_url
-            ws_url = public_url.replace("http://", "wss://").replace("https://", "wss://") + "/twilio"
+            ws_url = (
+                public_url.replace("http://", "wss://").replace("https://", "wss://") + "/twilio"
+            )
             os.environ["NGROK_WS_URL"] = ws_url
             logger.info("Ngrok public URL: %s", public_url)
             logger.info("WebSocket endpoint URL: %s", ws_url)
 
             app = FastAPI()
-            handler = CallHandler(self.config, self.ambient, self.voice_svc, self.dg, playbook, self.db_conn)
-            @app.websocket('/twilio')
+            handler = CallHandler(
+                self.config, self.ambient, self.voice_svc, self.dg, playbook, self.db_conn
+            )
+
+            @app.websocket("/twilio")
             async def ws_endpoint(ws: WebSocket):
                 params = ws.query_params
-                campaign = params.get('campaign', 'general')
-                persona = params.get('persona', 'default')
+                campaign = params.get("campaign", "general")
+                persona = params.get("persona", "default")
                 await handler.handle(ws, args.voice_id, campaign, persona)
 
             dash = DashboardApp(self.db_conn)
-            app.mount('/', dash.app)
-            uvicorn.run(app, host='0.0.0.0', port=args.port)
+            app.mount("/", dash.app)
+            uvicorn.run(app, host="0.0.0.0", port=args.port)
 
-        elif args.cmd == 'call':
+        elif args.cmd == "call":
             ws_url = os.getenv("NGROK_WS_URL")
             if not ws_url:
                 logger.error("No NGROK_WS_URL found for call command")
                 print("❌ No NGROK_WS_URL found. Start 'serve' first.")
                 sys.exit(1)
             logger.info("Initiating Twilio call to %s via WebSocket %s", args.phone, ws_url)
-            
+
             # Add parameters to the URL for campaign and persona
             param_ws_url = ws_url
             if args.campaign:
@@ -965,10 +1040,10 @@ class SalesAutomationApp:
                     param_ws_url += f"&persona={args.persona}"
             elif args.persona:
                 param_ws_url += f"?persona={args.persona}"
-            
+
             # Escape ampersands for XML
-            xml_safe_url = param_ws_url.replace('&', '&amp;')
-                
+            xml_safe_url = param_ws_url.replace("&", "&amp;")
+
             twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="alice">Please hold while we connect you.</Say>
@@ -978,17 +1053,13 @@ class SalesAutomationApp:
   <Pause length="300"/>
 </Response>"""
             client = TwilioClient(self.config.twilio_sid, self.config.twilio_token)
-            call = client.calls.create(
-                to=args.phone,
-                from_=self.config.twilio_from,
-                twiml=twiml
-            )
+            call = client.calls.create(to=args.phone, from_=self.config.twilio_from, twiml=twiml)
             logger.info("Placed call SID %s to %s", call.sid, args.phone)
             print(f"📞 Call placed. SID: {call.sid}")
 
         else:
             parser.print_help()
 
-if __name__ == '__main__':
-    import keys
+
+if __name__ == "__main__":
     SalesAutomationApp().run()

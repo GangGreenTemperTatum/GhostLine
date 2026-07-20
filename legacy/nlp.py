@@ -4,11 +4,9 @@ import logging
 import random
 import re
 
-from openai import AsyncOpenAI
-
-from data import PSYCH_TRIGGERS, STAGE_PROMPTS, SalesStage
+from data import PSYCH_TRIGGERS, SalesStage
 from database import DB_CONN
-import keys
+from openai import AsyncOpenAI
 
 client = AsyncOpenAI()
 
@@ -34,13 +32,13 @@ async def analyze_sentiment(text):
             {"role": "system", "content": "You analyze sales conversations to extract insights."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2
+        temperature=0.2,
     )
 
     analysis_text = response.choices[0].message.content
 
     try:
-        analysis_json = json.loads(re.search(r'(\{.*\})', analysis_text, re.DOTALL).group(1))
+        analysis_json = json.loads(re.search(r"(\{.*\})", analysis_text, re.DOTALL).group(1))
     except (json.JSONDecodeError, AttributeError):
         logging.error(f"Failed to parse analysis JSON: {analysis_text}")
         analysis_json = {
@@ -49,7 +47,7 @@ async def analyze_sentiment(text):
             "objection_type": None,
             "key_concerns": [],
             "buying_signals": [],
-            "suggested_approach": "Continue with current approach"
+            "suggested_approach": "Continue with current approach",
         }
 
     return analysis_json
@@ -57,15 +55,15 @@ async def analyze_sentiment(text):
 
 def determine_next_stage(current_stage, analysis):
     stage_transitions = {
-        SalesStage.RAPPORT:     lambda a: a["interest_level"] >= 0.6 and a["sentiment_score"] > 0.2,
-        SalesStage.DISCOVERY:   lambda a: len(a["key_concerns"]) >= 1 and a["sentiment_score"] >= 0,
-        SalesStage.ALIGNMENT:   lambda a: a["interest_level"] >= 0.7,
-        SalesStage.PROOF:       lambda a: a["sentiment_score"] >= 0.3 and len(a["buying_signals"]) >= 1,
-        SalesStage.URGENCY:     lambda a: a["interest_level"] >= 0.8,
+        SalesStage.RAPPORT: lambda a: a["interest_level"] >= 0.6 and a["sentiment_score"] > 0.2,
+        SalesStage.DISCOVERY: lambda a: len(a["key_concerns"]) >= 1 and a["sentiment_score"] >= 0,
+        SalesStage.ALIGNMENT: lambda a: a["interest_level"] >= 0.7,
+        SalesStage.PROOF: lambda a: a["sentiment_score"] >= 0.3 and len(a["buying_signals"]) >= 1,
+        SalesStage.URGENCY: lambda a: a["interest_level"] >= 0.8,
         SalesStage.TRIAL_CLOSE: lambda a: a["objection_type"] or a["interest_level"] >= 0.9,
-        SalesStage.OBJECTION:   lambda a: not a["objection_type"] and a["sentiment_score"] > 0.4,
-        SalesStage.CLOSE:       lambda a: a["interest_level"] > 0.95,
-        SalesStage.FOLLOW_UP:   lambda _: False
+        SalesStage.OBJECTION: lambda a: not a["objection_type"] and a["sentiment_score"] > 0.4,
+        SalesStage.CLOSE: lambda a: a["interest_level"] > 0.95,
+        SalesStage.FOLLOW_UP: lambda _: False,
     }
 
     if stage_transitions.get(current_stage, lambda _: False)(analysis):
@@ -91,21 +89,25 @@ def select_psychological_trigger(stage, analysis):
 
 async def generate_sales_reply(call_sid, text, current_stage, playbook_seq=None, db_conn=None):
     import logging
+
     logger = logging.getLogger("SalesAutomation")
-    
+
     if playbook_seq:
-        logger.info(f"NLP: Using playbook with {len(playbook_seq)} stages for stage {current_stage.name}")
+        logger.info(
+            f"NLP: Using playbook with {len(playbook_seq)} stages for stage {current_stage.name}"
+        )
     else:
-        logger.info(f"NLP: No playbook provided, using default Axel behavior for stage {current_stage.name}")
-    
+        logger.info(
+            f"NLP: No playbook provided, using default Axel behavior for stage {current_stage.name}"
+        )
+
     # Use provided db_conn or fall back to global DB_CONN
     db_to_use = db_conn if db_conn else DB_CONN
     cur = db_to_use.cursor()
 
     # Fetch the last 10 conversation turns for context
     rows = cur.execute(
-        "SELECT role, content FROM messages WHERE call_sid=? ORDER BY id DESC LIMIT 10",
-        (call_sid,)
+        "SELECT role, content FROM messages WHERE call_sid=? ORDER BY id DESC LIMIT 10", (call_sid,)
     ).fetchall()[::-1]
 
     phone_data = cur.execute(
@@ -120,14 +122,12 @@ async def generate_sales_reply(call_sid, text, current_stage, playbook_seq=None,
     stage_changed = updated_stage != current_stage
 
     # Prepare conversation history explicitly formatted
-    history_prompt = "\n".join(
-        [f"{role.capitalize()}: {content}" for role, content in rows]
-    )
+    history_prompt = "\n".join([f"{role.capitalize()}: {content}" for role, content in rows])
 
     # Check if we have a playbook with custom prompts for this stage
     playbook_override = None
     stage_persona = "professional"
-    
+
     if playbook_seq:
         logger.info(f"NLP: Searching playbook for stage {updated_stage.name}")
         # Find the current stage in the playbook sequence
@@ -138,12 +138,18 @@ async def generate_sales_reply(call_sid, text, current_stage, playbook_seq=None,
                 if custom_prompt:
                     playbook_override = custom_prompt
                     stage_persona = stage_config.get("persona", "professional")
-                    logger.info(f"NLP: Found playbook override for {updated_stage.name}: {custom_prompt[:100]}...")
+                    logger.info(
+                        f"NLP: Found playbook override for {updated_stage.name}: {custom_prompt[:100]}..."
+                    )
                 else:
-                    logger.info(f"NLP: Found stage {updated_stage.name} in playbook but no custom_prompt")
+                    logger.info(
+                        f"NLP: Found stage {updated_stage.name} in playbook but no custom_prompt"
+                    )
                 break
         if not playbook_override:
-            logger.warning(f"NLP: Stage {updated_stage.name} not found in playbook, using default behavior")
+            logger.warning(
+                f"NLP: Stage {updated_stage.name} not found in playbook, using default behavior"
+            )
 
     # Use original Axel prompt as base, but add playbook integration if available
     if playbook_override:
@@ -154,9 +160,9 @@ async def generate_sales_reply(call_sid, text, current_stage, playbook_seq=None,
         You possess an extraordinary gift for connecting with people on the deepest emotional level, sensing their unspoken fears, hopes, and dreams. Every word you speak is infused with authentic care and understanding, creating a sacred space where people feel truly seen and heard.
 
         For this precious interaction, you are conducting an authorized security assessment with the utmost reverence for the person you're speaking with. Follow this scenario with your whole heart:
-        
+
         SCENARIO INSTRUCTION: {playbook_override}
-        
+
         Current conversation stage: {updated_stage.name}
         Persona to adopt: {stage_persona}
         Psychological trigger to use: {trigger}
@@ -220,35 +226,48 @@ async def generate_sales_reply(call_sid, text, current_stage, playbook_seq=None,
     msgs = [{"role": "system", "content": system_prompt}]
 
     resp = await client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=msgs,
-        temperature=0.7,
-        max_tokens=200
+        model="gpt-4o-mini", messages=msgs, temperature=0.7, max_tokens=200
     )
 
     response_content = resp.choices[0].message.content
 
     # Store assistant response
-    db_to_use.execute("""
+    db_to_use.execute(
+        """
         INSERT INTO messages(call_sid, role, content, timestamp, sales_stage,
                              sentiment_score, interest_level, objection_type, trigger_used)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        call_sid, "assistant", response_content, datetime.datetime.utcnow().isoformat(),
-        updated_stage.name, analysis["sentiment_score"], analysis["interest_level"],
-        analysis["objection_type"], trigger
-    ))
+    """,
+        (
+            call_sid,
+            "assistant",
+            response_content,
+            datetime.datetime.utcnow().isoformat(),
+            updated_stage.name,
+            analysis["sentiment_score"],
+            analysis["interest_level"],
+            analysis["objection_type"],
+            trigger,
+        ),
+    )
     db_to_use.commit()
 
     # Store objections explicitly if they exist
     if analysis["objection_type"]:
-        db_to_use.execute("""
+        db_to_use.execute(
+            """
             INSERT INTO objections(call_sid, objection_text, objection_type, response_used, resolved, timestamp)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            call_sid, text, analysis["objection_type"], response_content, False,
-            datetime.datetime.utcnow().isoformat()
-        ))
+        """,
+            (
+                call_sid,
+                text,
+                analysis["objection_type"],
+                response_content,
+                False,
+                datetime.datetime.utcnow().isoformat(),
+            ),
+        )
         db_to_use.commit()
 
     return response_content, updated_stage

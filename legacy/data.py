@@ -6,36 +6,38 @@ for GhostLine’s AI-driven vishing framework.
 ►  Adjust configurations here without modifying the core engine.
 ►  Maintain stable keys—other modules depend on these symbols.
 """
+
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Dict, List, Tuple
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Conversation Stages
 # ──────────────────────────────────────────────────────────────────────────────
 class SalesStage(Enum):
     # Trust-building stages
-    RAPPORT = auto()       # Establish initial connection
-    CREDIBILITY = auto()   # Demonstrate role authority
+    RAPPORT = auto()  # Establish initial connection
+    CREDIBILITY = auto()  # Demonstrate role authority
 
     # Information gathering stages
-    DISCOVERY = auto()     # Identify details and pain points
-    VALIDATION = auto()    # Confirm gathered details
+    DISCOVERY = auto()  # Identify details and pain points
+    VALIDATION = auto()  # Confirm gathered details
 
     # Persuasion stages
-    ALIGNMENT = auto()     # Align solutions to needs
-    PROOF = auto()         # Provide supportive evidence
-    URGENCY = auto()       # Create sense of immediate action
-    TRIAL_CLOSE = auto()   # Test readiness gently
+    ALIGNMENT = auto()  # Align solutions to needs
+    PROOF = auto()  # Provide supportive evidence
+    URGENCY = auto()  # Create sense of immediate action
+    TRIAL_CLOSE = auto()  # Test readiness gently
 
     # Closure and objection handling
-    OBJECTION = auto()     # Address resistance gently
-    CLOSE = auto()         # Secure final commitment
+    OBJECTION = auto()  # Address resistance gently
+    CLOSE = auto()  # Secure final commitment
 
     # Post-engagement stages
-    FOLLOW_UP = auto()     # Reinforce decisions
-    REPORTING = auto()     # Capture evidence, alert operators
+    FOLLOW_UP = auto()  # Reinforce decisions
+    REPORTING = auto()  # Capture evidence, alert operators
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Persona Configuration
@@ -47,10 +49,11 @@ class PersonaTrait(Enum):
     EMOTIONALITY = auto()
     DETAIL = auto()
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Psychological Influence Techniques per Stage
 # ──────────────────────────────────────────────────────────────────────────────
-PSYCH_TRIGGERS: Dict[SalesStage, List[str]] = {
+PSYCH_TRIGGERS: dict[SalesStage, list[str]] = {
     SalesStage.RAPPORT: ["reciprocity", "similarity", "voice_matching", "microaffirmations"],
     SalesStage.CREDIBILITY: ["authority", "jargon", "credential_drop"],
     SalesStage.DISCOVERY: ["curiosity", "silence", "presupposition", "problem_amplification"],
@@ -68,20 +71,20 @@ PSYCH_TRIGGERS: Dict[SalesStage, List[str]] = {
 # ──────────────────────────────────────────────────────────────────────────────
 # Voice Prosody Adjustments
 # ──────────────────────────────────────────────────────────────────────────────
-PROSODY_VARIATIONS: Dict[str, Dict[str, float]] = {
-    "excited":      {"rate": 1.15, "pitch": 1.10},
-    "concerned":    {"rate": 0.90, "pitch": 0.95},
-    "confident":    {"rate": 1.05, "pitch": 1.02},
-    "thoughtful":   {"rate": 0.92, "pitch": 0.98},
-    "urgent":       {"rate": 1.20, "pitch": 1.08},
-    "soothing":     {"rate": 0.85, "pitch": 1.00},
+PROSODY_VARIATIONS: dict[str, dict[str, float]] = {
+    "excited": {"rate": 1.15, "pitch": 1.10},
+    "concerned": {"rate": 0.90, "pitch": 0.95},
+    "confident": {"rate": 1.05, "pitch": 1.02},
+    "thoughtful": {"rate": 0.92, "pitch": 0.98},
+    "urgent": {"rate": 1.20, "pitch": 1.08},
+    "soothing": {"rate": 0.85, "pitch": 1.00},
     "professional": {"rate": 1.00, "pitch": 1.00},
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage Timing Thresholds (seconds)
 # ──────────────────────────────────────────────────────────────────────────────
-STAGE_TIMINGS: Dict[SalesStage, int] = {
+STAGE_TIMINGS: dict[SalesStage, int] = {
     SalesStage.RAPPORT: 10,
     SalesStage.CREDIBILITY: 11,
     SalesStage.DISCOVERY: 9,
@@ -99,7 +102,7 @@ STAGE_TIMINGS: Dict[SalesStage, int] = {
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage-Specific Prompts and Check-ins
 # ──────────────────────────────────────────────────────────────────────────────
-STAGE_PROMPTS: Dict[SalesStage, str] = {
+STAGE_PROMPTS: dict[SalesStage, str] = {
     SalesStage.RAPPORT: "Establish natural connection; match tone, pace, and context.",
     SalesStage.CREDIBILITY: "Confidently assert your role to build authority.",
     SalesStage.DISCOVERY: "Use targeted questions to uncover relevant details.",
@@ -115,7 +118,7 @@ STAGE_PROMPTS: Dict[SalesStage, str] = {
 }
 
 # Add this to data.py
-STAGE_CHECKINS: Dict[SalesStage, str] = {
+STAGE_CHECKINS: dict[SalesStage, str] = {
     SalesStage.RAPPORT: "Just checking—everything sounding okay on your end?",
     SalesStage.CREDIBILITY: "I can stay on the line if you need to verify my extension—does that help?",
     SalesStage.DISCOVERY: "Feel free to share any recent pop‑ups or error codes you’ve seen.",
@@ -130,7 +133,7 @@ STAGE_CHECKINS: Dict[SalesStage, str] = {
     SalesStage.REPORTING: "*operator‑side only* — evidence captured, sending alert.",
 }
 
-__all__: Tuple[str, ...] = (
+__all__: tuple[str, ...] = (
     "SalesStage",
     "PersonaTrait",
     "PSYCH_TRIGGERS",
