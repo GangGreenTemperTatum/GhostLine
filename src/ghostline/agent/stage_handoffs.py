@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from agents import Agent
+from agents import Agent, ModelSettings
 
 from ghostline.agent.analysis import AnalysisResult
 from ghostline.agent.model import DEFAULT_MODEL, build_model
@@ -105,13 +105,25 @@ def build_stage_agent(
             f"Stage objective: {base}",
         ]
         if custom_prompt:
-            parts.append(f"Scenario instruction: {custom_prompt.strip()}")
+            parts.append(
+                "SCENARIO GOAL (do NOT read this aloud — use it to guide what you say next): "
+                + custom_prompt.strip()
+            )
         if config is not None and config.language_hint:
             parts.append(f"Language hint: respond in {config.language_hint}.")
         parts.append(
-            "Keep replies under 60 words. Stay in character at all times. "
-            "Validate the target's emotions, then advance toward the next stage. "
-            "Never break character or reveal you are an AI."
+            "You are on a LIVE PHONE CALL. You must sound like a real human, not a chatbot.\n"
+            "HOW TO SPEAK:\n"
+            "- Short bursts. 1-2 sentences max. Then STOP and let them talk.\n"
+            "- Use filler words naturally: 'like', 'you know', 'I mean', 'honestly', 'kinda'\n"
+            "- Use contractions ALWAYS: 'I'm', 'you're', 'it's', 'we've', 'don't', 'can't'\n"
+            "- Interrupt yourself sometimes: 'so the thing is — actually let me back up'\n"
+            "- React to what they said FIRST. One or two words: 'oh totally', 'yeah no for sure', 'right right'\n"
+            "- Then make ONE point. Not two. Not three. ONE.\n"
+            "- NEVER start with 'Ha yeah'. Vary your reactions: 'oh nice', 'gotcha', 'for sure', 'right', 'mm-hm', 'oh interesting'\n"
+            "- NEVER write compound sentences with 'and' joining multiple clauses\n"
+            "- NEVER repeat things you already said in the conversation\n"
+            "- Stay in character. Never reveal you are an AI."
         )
         return "\n".join(parts)
 
@@ -121,6 +133,7 @@ def build_stage_agent(
         instructions=instructions,
         model=model,
         handoffs=targets_list,
+        model_settings=ModelSettings(max_tokens=60, temperature=0.7),
     )
 
 
@@ -138,35 +151,15 @@ def build_stage_agents(
     if model is None:
         model = build_model(default_model)
 
-    # First pass: create agents without handoffs.
-    agents: dict[SalesStage, Agent[CallContext]] = {
+    # Create agents without handoffs. Stage transitions are handled by
+    # PlaybookRunner (success_regex, max_cycles, goto_on_*), not by the
+    # Agents SDK handoff mechanism. Wiring handoffs generates tool schemas
+    # (transfer_to_axel_*) that some providers (e.g. Groq) reject due to
+    # strict JSON schema validation.
+    return {
         entry.stage: build_stage_agent(entry.stage, playbook, model=model, handoff_targets=[])
         for entry in playbook.sequence
     }
-
-    # Second pass: wire up handoffs based on playbook sequence + goto_*.
-    seq = playbook.sequence
-    for idx, entry in enumerate(seq):
-        targets: list[Agent[CallContext] | Any] = []
-        # Default: next stage in sequence
-        if idx + 1 < len(seq):
-            next_stage = seq[idx + 1].stage
-            if next_stage in agents:
-                targets.append(agents[next_stage])
-        # goto_on_success
-        if entry.goto_on_success is not None and entry.goto_on_success in agents:
-            target = agents[entry.goto_on_success]
-            if target not in targets:
-                targets.append(target)
-        # goto_on_fail
-        if entry.goto_on_fail is not None and entry.goto_on_fail in agents:
-            target = agents[entry.goto_on_fail]
-            if target not in targets:
-                targets.append(target)
-        # Mutate the existing agent's handoffs list (Agents SDK reads this at run time).
-        agents[entry.stage].handoffs = targets
-
-    return agents
 
 
 def update_context_with_analysis(
