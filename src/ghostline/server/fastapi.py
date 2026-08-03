@@ -400,6 +400,11 @@ class CallSession:
                 )
 
                 await self._speak(reply)
+                # Brief cooldown after speaking — Twilio buffers audio so
+                # the target is still hearing the reply for a moment after
+                # we finish sending frames. Without this, queued utterances
+                # (transcribed during playback) fire instantly and overlap.
+                await asyncio.sleep(0.8)
             finally:
                 self._speaking = False
                 self.last_activity = asyncio.get_event_loop().time()

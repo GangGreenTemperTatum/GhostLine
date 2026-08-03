@@ -112,17 +112,13 @@ def build_stage_agent(
         if config is not None and config.language_hint:
             parts.append(f"Language hint: respond in {config.language_hint}.")
         parts.append(
-            "You are on a LIVE PHONE CALL. You must sound like a real human, not a chatbot.\n"
-            "HOW TO SPEAK:\n"
-            "- Short bursts. 1-2 sentences max. Then STOP and let them talk.\n"
-            "- Use filler words naturally: 'like', 'you know', 'I mean', 'honestly', 'kinda'\n"
-            "- Use contractions ALWAYS: 'I'm', 'you're', 'it's', 'we've', 'don't', 'can't'\n"
-            "- Interrupt yourself sometimes: 'so the thing is — actually let me back up'\n"
-            "- React to what they said FIRST. One or two words: 'oh totally', 'yeah no for sure', 'right right'\n"
-            "- Then make ONE point. Not two. Not three. ONE.\n"
-            "- NEVER start with 'Ha yeah'. Vary your reactions: 'oh nice', 'gotcha', 'for sure', 'right', 'mm-hm', 'oh interesting'\n"
-            "- NEVER write compound sentences with 'and' joining multiple clauses\n"
-            "- NEVER repeat things you already said in the conversation\n"
+            "LIVE PHONE CALL. Sound like a real person.\n"
+            "- 1-2 short sentences. Complete your thought, then stop.\n"
+            "- React briefly to what they said, then make one point.\n"
+            "- Use contractions: I'm, you're, it's, don't, can't\n"
+            "- BANNED phrases: 'honestly', 'you know', 'I mean', 'the thing is', 'so the thing is'\n"
+            "- NEVER repeat anything you already said in the conversation\n"
+            "- NEVER chain clauses with 'and' — keep sentences short and separate\n"
             "- Stay in character. Never reveal you are an AI."
         )
         return "\n".join(parts)
@@ -133,7 +129,7 @@ def build_stage_agent(
         instructions=instructions,
         model=model,
         handoffs=targets_list,
-        model_settings=ModelSettings(max_tokens=60, temperature=0.7),
+        model_settings=ModelSettings(max_tokens=80, temperature=0.7),
     )
 
 
